@@ -3725,25 +3725,42 @@ def _build_fin_report_ksyusha(
         total_pay: float = 0.0
         for vendor in sorted(agg.keys()):
             data = agg[vendor]
+            # Базовые суммы: equip_sum для класса «equipment», other_sum — остальные классы.
             equip_sum = float(data.get("equip_sum", 0.0))
             other_sum = float(data.get("other_sum", 0.0))
-            total_before = equip_sum + other_sum
-            # Проценты скидки, комиссии и налога
+            # Проценты скидки, комиссии и налога берутся из карт. Значения уже приведены
+            # к долям (0.15 соответствует 15 %). Для отсутствующих записей используется 0.
             disc_pct = discount_map.get(normalize_case(vendor), 0.0)
             comm_pct = commission_map.get(normalize_case(vendor), 0.0)
             tax_pct = tax_map.get(normalize_case(vendor), 0.0)
-            # Рассчитываем сумму скидки от общей суммы
-            disc_amt = total_before * disc_pct
-            # "Сумма по смете" – это сумма, которую оплачиваем подрядчику с учётом налога,
-            # но без учёта комиссии. Т.е. из общей суммы вычитаем скидку и добавляем налог.
-            smeta_sum = (total_before - disc_amt) * (1.0 + tax_pct)
-            # Сумма комиссии считается от общей суммы перед скидкой (согласно
-            # требованиям пользователя), затем вычитается из суммы после скидки.
-            comm_amt = total_before * comm_pct
-            pay_sum = (total_before - disc_amt - comm_amt) * (1.0 + tax_pct)
+
+            # --- Расчёт сумм с учётом скидки, комиссии и налога ---
+            # 1. Скидка и комиссия применяются только к сумме класса equipment. Сумма other_sum
+            #    не изменяется.
+            # 2. Сначала вычитаем скидку, затем комиссию, затем добавляем налог.
+
+            # Сумма скидки на оборудование
+            discount_amount = equip_sum * disc_pct
+            # Стоимость оборудования после скидки
+            after_discount_equip = equip_sum - discount_amount
+            # Сумма комиссии на оборудование (на сумму после скидки)
+            commission_amount = after_discount_equip * comm_pct
+            # Стоимость оборудования после вычета комиссии
+            after_commission_equip = after_discount_equip - commission_amount
+
+            # Стоимость по смете (без комиссии, но со скидкой) до налога
+            smeta_before_tax = after_discount_equip + other_sum
+            # Стоимость по смете с учётом налога
+            smeta_sum = smeta_before_tax * (1.0 + tax_pct)
+
+            # Итоговая сумма к оплате: после скидки и комиссии, затем налог
+            pay_before_tax = after_commission_equip + other_sum
+            pay_sum = pay_before_tax * (1.0 + tax_pct)
+
+            # Накопление общих итогов
             total_smeta += smeta_sum
             total_pay += pay_sum
-            # Форматируем строки: используем неразрывный пробел для отделения тысяч
+            # Форматируем строки: используем пробелы для отделения тысяч
             try:
                 smeta_str = f"{smeta_sum:,.2f}".replace(",", " ")
             except Exception:
