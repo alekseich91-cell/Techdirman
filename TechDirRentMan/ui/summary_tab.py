@@ -633,7 +633,13 @@ def build_zone_table(page: Any) -> QtWidgets.QTableWidget:
 
 # 3. Инициализация табов зон
 def init_zone_tabs(page: Any) -> None:
-    """Очищает и пересоздаёт вкладки зон в соответствии с данными проекта."""
+    """Очищает и пересоздаёт вкладки зон в соответствии с данными проекта.
+
+    В зависимости от наличия позиций без зоны (``zone`` равна ``NULL`` или
+    пустой строке) создаёт вкладку «Без зоны» или использует первую
+    существующую зону в качестве зоны по умолчанию. Также вычисляет
+    ``page.default_zone`` для использования при добавлении новых позиций.
+    """
     # Удаляем старые вкладки
     while page.zone_tabs.count() > 0:
         w = page.zone_tabs.widget(0)
@@ -641,57 +647,93 @@ def init_zone_tabs(page: Any) -> None:
         w.deleteLater()
     page.zone_tables.clear()
 
+    # Сбрасываем значение зоны по умолчанию
+    page.default_zone = ""
+
     if page.project_id is None:
         return
 
-    # 2.1 Получаем уникальные зоны из БД
-    zones: List[str] = page.db.project_distinct_values(page.project_id, "zone") or []
-    # 2.2 Подмешиваем сохранённые зоны, чтобы отображать вкладки без позиций
+    # 3.1 Получаем список зон из БД
+    try:
+        zones: List[str] = page.db.project_distinct_values(page.project_id, "zone") or []
+    except Exception:
+        zones = []
+    # 3.2 Подмешиваем сохранённые зоны, чтобы отображать вкладки без позиций
     try:
         zones += _load_persisted_zones(page)
     except Exception:
         pass
-    # 2.3 Удаляем дубликаты (без учёта регистра) и пустые значения, сохраняя порядок
+    # 3.3 Определяем наличие позиций без зоны (``None`` или пустая строка)
+    no_zone_exists = False
+    for z in zones:
+        if z is None or str(z).strip() == "":
+            no_zone_exists = True
+            break
+    # 3.4 Формируем список уникальных зон без учёта регистра и пустых значений
     unique_zones: List[str] = []
     seen_lower: Set[str] = set()
     for z in zones:
         if not z:
             continue
-        norm = z.strip()
+        norm = str(z).strip()
         key = norm.lower()
         if key not in seen_lower:
             unique_zones.append(norm)
             seen_lower.add(key)
-    zones_clean = [""] + unique_zones
+    # 3.5 Если есть позиции без зоны, добавляем пустую зону; иначе нет
+    zones_clean: List[str] = []
+    if no_zone_exists:
+        zones_clean.append("")
+        # зона без имени остаётся зоной по умолчанию
+        page.default_zone = ""
+    else:
+        # иначе зоной по умолчанию станет первая существующая
+        if unique_zones:
+            page.default_zone = unique_zones[0]
+    zones_clean.extend(unique_zones)
 
+    # 3.6 Создаём вкладки и таблицы для каждой зоны
     for z in zones_clean:
+        # метка для вкладки
         label = "Без зоны" if not z else z
         table = build_zone_table(page)
-        # При изменении qty/coeff/price вызываем соответствующий метод страницы
         table.itemChanged.connect(page._on_summary_item_changed)
         page.zone_tabs.addTab(table, label)
         page.zone_tables[z] = table
 
-    # Обновляем список зон для переноса
+    # 3.7 Обновляем список зон для переноса
     page.cmb_move_zone.blockSignals(True)
     page.cmb_move_zone.clear()
-    page.cmb_move_zone.addItem("Без зоны", "")
-    for z in [z for z in unique_zones if z]:
-        page.cmb_move_zone.addItem(z, z)
+    if no_zone_exists:
+        page.cmb_move_zone.addItem("Без зоны", "")
+    for z in unique_zones:
+        # для комбобокса используем нормализованное отображение
+        page.cmb_move_zone.addItem(normalize_case(z), z)
     page.cmb_move_zone.blockSignals(False)
 
+    # 3.8 Обновляем список зон для ручного добавления
     fill_manual_zone_combo(page, unique_zones)
 
 
 # 4. Комбо зон для ручного добавления
 def fill_manual_zone_combo(page: Any, zones: List[str]) -> None:
-    """Обновляет выпадающий список зон на панели ручного добавления."""
+    """Обновляет выпадающий список зон на панели ручного добавления.
+
+    Если ``page.default_zone`` равна пустой строке, то показываем пункт
+    «Без зоны» в качестве первого варианта. В противном случае выводим
+    только существующие зоны, чтобы пользователь по умолчанию добавлял
+    позиции в первую зону из списка.
+    """
     page.cmb_add_zone.blockSignals(True)
     page.cmb_add_zone.clear()
-    page.cmb_add_zone.addItem("Без зоны", "")
+    # Включаем вариант "Без зоны" только если зона по умолчанию действительно пустая
+    if getattr(page, "default_zone", "") == "":
+        page.cmb_add_zone.addItem("Без зоны", "")
+    # Добавляем остальные зоны
     for z in zones:
         if z:
-            page.cmb_add_zone.addItem(z, z)
+            # Показываем нормализованный вариант, но храним исходный ключ
+            page.cmb_add_zone.addItem(normalize_case(z), z)
     page.cmb_add_zone.blockSignals(False)
 
 
@@ -1384,6 +1426,9 @@ def move_selected_to_zone(page: Any) -> None:
     target_data = page.cmb_move_zone.currentData()
     raw = target_data if target_data is not None else target_text
     target = normalize_case(raw) if raw is not None else ""
+    # Если выбрана пустая зона, но есть зона по умолчанию, используем её
+    if not target and getattr(page, "default_zone", ""):
+        target = page.default_zone
 
     # Если выбранной зоны нет среди существующих — создаём её
     if target and target not in page.zone_tables:
@@ -1520,6 +1565,9 @@ def add_manual_item(page: Any) -> None:
     # Выбираем текст зоны или данные и нормализуем
     zone_raw = zone_data if zone_data is not None else (page.cmb_add_zone.currentText() or "")
     zone = normalize_case(zone_raw)
+    # Если пользователь выбрал «Без зоны», но зона по умолчанию задана, используем её
+    if not zone and getattr(page, "default_zone", ""):
+        zone = page.default_zone
 
     power_w = float(page.sp_add_power.value() or 0)
     if power_w <= 0:
@@ -2371,6 +2419,9 @@ def add_catalog_item(page: Any) -> None:
     zone_data = page.cmb_add_zone.currentData()
     zone_raw = zone_data if zone_data is not None else (page.cmb_add_zone.currentText() or "")
     zone = normalize_case(zone_raw)
+    # Если пользователь выбрал «Без зоны», но зона по умолчанию задана, используем её
+    if not zone and getattr(page, "default_zone", ""):
+        zone = page.default_zone
     power = float(row.get("power_watts", 0.0) or 0.0)
     # Проверяем, существует ли уже в смете позиция с теми же параметрами (имя, подрядчик, отдел,
     # класс, цена, коэффициент и зона). Если такая найдена, увеличиваем её количество,
