@@ -443,8 +443,11 @@ def build_summary_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     # Темно‑серый фон (#444444) заменён на светло‑серый (#cccccc),
     # чтобы элементы формы были лучше видны на экране и не «сливались»
     # с остальным интерфейсом. Радиус и отступы сохранены.
+    # Оттенок фона для панели ручного ввода немного затемнённый относительно
+    # системного цвета. Ранее использовался цвет #cccccc (светло‑серый),
+    # теперь выбран #bbbbbb для лучшей контрастности.
     manual_frame.setStyleSheet(
-        "background-color: #cccccc; border-radius: 4px; padding: 4px;"
+        "background-color: #bbbbbb; border-radius: 4px; padding: 4px;"
     )
     manual_layout = QtWidgets.QVBoxLayout(manual_frame)
     manual_layout.setContentsMargins(4, 2, 4, 2)
@@ -790,6 +793,8 @@ def reload_zone_tabs(page: Any) -> None:
     class_ru = page.cmb_f_class.currentText()
     class_en = CLASS_RU2EN.get(class_ru) if class_ru and class_ru != "<Все классы>" else "<ALL>"
 
+    # Общая сумма по всем зонам (не отображается пользователю),
+    # мы будем отдельно рассчитывать сумму для активной зоны.
     total_amount = 0.0
 
     # Проверяем, активирован ли режим сравнения
@@ -1121,7 +1126,68 @@ def reload_zone_tabs(page: Any) -> None:
                 total_amount += rec["amount_sum"]
         table.blockSignals(False)
         apply_auto_col_resize(table)
-    page.label_total.setText(f"Итого: {fmt_num(total_amount, 2)}")
+    # Сумма зависит не только от фильтров, но и от выбранной зоны.
+    # Определяем активную зону: индекс вкладки и соответствующий ключ.
+    try:
+        cur_idx = page.zone_tabs.currentIndex() if hasattr(page, "zone_tabs") else -1
+    except Exception:
+        cur_idx = -1
+    cur_sum = 0.0
+    if cur_idx >= 0:
+        # Получаем ключ зоны по порядку из zone_tables (порядок соответствует вкладкам)
+        try:
+            keys = list(page.zone_tables.keys())
+            if 0 <= cur_idx < len(keys):
+                cur_zone_key = keys[cur_idx]
+                # Получаем те же фильтры, что и в начале функции
+                vendor_f = page.cmb_f_vendor.currentText()
+                if vendor_f == "<Все подрядчики>":
+                    vendor_f = "<ALL>"
+                department_f = page.cmb_f_department.currentText()
+                if department_f == "<Все отделы>":
+                    department_f = "<ALL>"
+                class_ru_f = page.cmb_f_class.currentText()
+                class_en_f = CLASS_RU2EN.get(class_ru_f) if class_ru_f and class_ru_f != "<Все классы>" else "<ALL>"
+                # Запрашиваем позиции только для выбранной зоны и фильтров
+                rows_cur = page.db.list_items_filtered(
+                    project_id=page.project_id,
+                    vendor=vendor_f,
+                    department=department_f,
+                    zone=cur_zone_key,
+                    class_en=class_en_f,
+                    name_like=None,
+                )
+                # Если есть строка поиска, применяем её
+                search_raw_f = page.ed_search.text() if hasattr(page, "ed_search") else ""
+                if search_raw_f:
+                    filtered_cur = []
+                    for r in rows_cur:
+                        try:
+                            nm = r["name"] or ""
+                            ven = r["vendor"] or ""
+                            dep = r["department"] or ""
+                            zn = r["zone"] or ""
+                            if (
+                                contains_search(nm, search_raw_f)
+                                or contains_search(ven, search_raw_f)
+                                or contains_search(dep, search_raw_f)
+                                or contains_search(zn, search_raw_f)
+                            ):
+                                filtered_cur.append(r)
+                        except Exception:
+                            continue
+                    rows_cur = filtered_cur
+                # Суммируем amount
+                for r in rows_cur:
+                    try:
+                        amt = float(r["amount"] or 0.0)
+                        cur_sum += amt
+                    except Exception:
+                        continue
+        except Exception:
+            cur_sum = 0.0
+    # Устанавливаем сумму выбранной зоны
+    page.label_total.setText(f"Итого: {fmt_num(cur_sum, 2)}")
     # Обновляем данные бухгалтерии, если доступна
     try:
         if hasattr(page, "recalc_finance"):
@@ -1743,8 +1809,59 @@ def on_summary_item_changed(page: Any, item: QtWidgets.QTableWidgetItem) -> None
         table.item(row, 4).setText(fmt_num(amount, 2))
         table.blockSignals(False)
 
-        total = page.db.project_total(page.project_id)
-        page.label_total.setText(f"Итого: {fmt_num(total, 2)}")
+        # После изменения строки пересчитываем сумму только для активной зоны с учётом текущих фильтров
+        try:
+            cur_idx = page.zone_tabs.currentIndex() if hasattr(page, "zone_tabs") else -1
+        except Exception:
+            cur_idx = -1
+        cur_sum = 0.0
+        if cur_idx >= 0:
+            try:
+                keys = list(page.zone_tables.keys())
+                if 0 <= cur_idx < len(keys):
+                    cur_zone_key = keys[cur_idx]
+                    # Фильтры идентичны применяемым в reload_zone_tabs
+                    vendor_f = page.cmb_f_vendor.currentText()
+                    if vendor_f == "<Все подрядчики>": vendor_f = "<ALL>"
+                    department_f = page.cmb_f_department.currentText()
+                    if department_f == "<Все отделы>": department_f = "<ALL>"
+                    class_ru_f = page.cmb_f_class.currentText()
+                    class_en_f = CLASS_RU2EN.get(class_ru_f) if class_ru_f and class_ru_f != "<Все классы>" else "<ALL>"
+                    rows_cur = page.db.list_items_filtered(
+                        project_id=page.project_id,
+                        vendor=vendor_f,
+                        department=department_f,
+                        zone=cur_zone_key,
+                        class_en=class_en_f,
+                        name_like=None,
+                    )
+                    search_raw_f = page.ed_search.text() if hasattr(page, "ed_search") else ""
+                    if search_raw_f:
+                        tmp = []
+                        for r in rows_cur:
+                            try:
+                                nm = r["name"] or ""
+                                ven = r["vendor"] or ""
+                                dep = r["department"] or ""
+                                zn = r["zone"] or ""
+                                if (
+                                    contains_search(nm, search_raw_f)
+                                    or contains_search(ven, search_raw_f)
+                                    or contains_search(dep, search_raw_f)
+                                    or contains_search(zn, search_raw_f)
+                                ):
+                                    tmp.append(r)
+                            except Exception:
+                                continue
+                        rows_cur = tmp
+                    for r in rows_cur:
+                        try:
+                            cur_sum += float(r["amount"] or 0.0)
+                        except Exception:
+                            continue
+            except Exception:
+                cur_sum = 0.0
+        page.label_total.setText(f"Итого: {fmt_num(cur_sum, 2)}")
         # Обновляем бухгалтерию при изменении позиции
         try:
             if hasattr(page, "recalc_finance"):
@@ -3383,16 +3500,23 @@ def open_master_addition(page: Any) -> None:
             self.page = parent_page
             self.zone_name = zone
             self.setWindowTitle("Мастер добавления")
-            self.resize(360, 240)
+            self.resize(400, 300)
+            # Основная вертикальная компоновка для диалога
             v = QtWidgets.QVBoxLayout(self)
             v.setContentsMargins(8, 8, 8, 8)
             v.setSpacing(6)
+            # Создаём вкладки: первая вкладка содержит основные кнопки, вторая — настройки
+            tabs = QtWidgets.QTabWidget()
+            # ---- Первая вкладка: основные действия ----
+            tab_main = QtWidgets.QWidget(); layout_main = QtWidgets.QVBoxLayout(tab_main)
+            layout_main.setContentsMargins(4, 4, 4, 4)
+            layout_main.setSpacing(6)
             lbl_zone = QtWidgets.QLabel()
             if self.zone_name:
                 lbl_zone.setText(f"Текущая зона: {self.zone_name}")
             else:
                 lbl_zone.setText("Текущая зона не выбрана")
-            v.addWidget(lbl_zone)
+            layout_main.addWidget(lbl_zone)
             btn_screen = QtWidgets.QPushButton("Добавить экран")
             btn_column = QtWidgets.QPushButton("Добавить колонки")
             btn_commut = QtWidgets.QPushButton("Добавить коммутацию")
@@ -3404,10 +3528,30 @@ def open_master_addition(page: Any) -> None:
             btn_stage.clicked.connect(self._add_stage)
             btn_director.clicked.connect(self._add_director)
             for b in (btn_screen, btn_column, btn_commut, btn_stage, btn_director):
-                v.addWidget(b)
+                layout_main.addWidget(b)
+            layout_main.addStretch(1)
+            # ---- Вторая вкладка: настройки ----
+            tab_settings = QtWidgets.QWidget(); layout_settings = QtWidgets.QVBoxLayout(tab_settings)
+            layout_settings.setContentsMargins(4, 4, 4, 4)
+            layout_settings.setSpacing(6)
+            # Пока вторая вкладка содержит заглушку. Здесь в будущем будут преднастройки кнопок мастера.
+            placeholder = QtWidgets.QLabel(
+                "Настройки предустановок для кнопок мастера будут реализованы здесь.\n"
+                "Например, выбор витых пар и процессоров для LED‑экрана,\n"
+                "галочка \"Добавить конструктив\" и другие параметры."
+            )
+            placeholder.setWordWrap(True)
+            layout_settings.addWidget(placeholder)
+            layout_settings.addStretch(1)
+            # Добавляем вкладки в TabWidget
+            tabs.addTab(tab_main, "Добавление")
+            tabs.addTab(tab_settings, "Настройки")
+            # Добавляем TabWidget на основной layout
+            v.addWidget(tabs)
+            # Кнопка закрытия находится под вкладками
             btn_close = QtWidgets.QPushButton("Закрыть")
             btn_close.clicked.connect(self.reject)
-            v.addWidget(btn_close)
+            v.addWidget(btn_close, alignment=QtCore.Qt.AlignRight)
         def _add_screen(self) -> None:
             # Сохраняем максимальный id перед вызовом мастера
             try:
@@ -3448,6 +3592,15 @@ def open_master_addition(page: Any) -> None:
                 pass
             self.accept()
         def _add_column(self) -> None:
+            # Перед добавлением колонок запрашиваем подрядчика. Если пользователь
+            # отменил ввод, действие прерываем. Отдел для колонок всегда "звук".
+            vendor_name, ok = QtWidgets.QInputDialog.getText(
+                self, "Подрядчик колонок", "Введите название подрядчика для аудиосистемы:",
+                text=""
+            )
+            if not ok:
+                return
+            vendor_name = normalize_case(vendor_name.strip()) if vendor_name else ""
             try:
                 cur = self.page.db._conn.cursor()
                 row = cur.execute("SELECT COALESCE(MAX(id),0) FROM items").fetchone()
@@ -3465,13 +3618,21 @@ def open_master_addition(page: Any) -> None:
                 for r in rows:
                     try:
                         it_id = int(r[0])
-                        self.page.db.update_item_field(it_id, "zone", self.zone_name or "")
+                        # Обновляем зону, подрядчика и отдел у каждой новой записи аудиосистемы
+                        self.page.db.update_item_fields(it_id, {
+                            "zone": self.zone_name or "",
+                            "vendor": vendor_name,
+                            "department": normalize_case("звук")
+                        })
                     except Exception:
                         continue
                 if rows:
                     try:
                         if hasattr(self.page, "_log"):
-                            self.page._log(f"Мастер добавления: колонки добавлены в зону '{self.zone_name}'.")
+                            self.page._log(
+                                f"Мастер добавления: колонки добавлены в зону '{self.zone_name}'"
+                                f" с подрядчиком '{vendor_name or 'не указан'}' и отделом 'звук'."
+                            )
                     except Exception:
                         pass
             except Exception as ex:
@@ -3486,6 +3647,14 @@ def open_master_addition(page: Any) -> None:
                 pass
             self.accept()
         def _add_commutation(self) -> None:
+            # Запрашиваем подрядчика для коммутации. Если пользователь отменил ввод — выход.
+            vendor_name, ok = QtWidgets.QInputDialog.getText(
+                self, "Подрядчик коммутации", "Введите название подрядчика для коммутации:",
+                text=""
+            )
+            if not ok:
+                return
+            vendor_name = normalize_case(vendor_name.strip()) if vendor_name else ""
             try:
                 cur = self.page.db._conn.cursor()
                 cur.execute(
@@ -3517,7 +3686,7 @@ def open_master_addition(page: Any) -> None:
                 "amount": comm_sum,
                 "unit_price": comm_sum,
                 "source_file": "COMMUTATION_MASTER",
-                "vendor": "",
+                "vendor": vendor_name,
                 "department": "",
                 "zone": self.zone_name or "",
                 "power_watts": 0.0,
@@ -3576,6 +3745,9 @@ def open_master_addition(page: Any) -> None:
             director_amount = total * 0.10
             import datetime
             batch = f"techdir-{datetime.datetime.utcnow().isoformat()}"
+            # При добавлении тех. директора создаём позицию в зоне "Техдирекция" с подрядчиком "техдиректор"
+            default_zone = "Техдирекция"
+            default_vendor = normalize_case("техдиректор")
             item = {
                 "project_id": self.page.project_id,
                 "type": "other",
@@ -3586,9 +3758,9 @@ def open_master_addition(page: Any) -> None:
                 "amount": director_amount,
                 "unit_price": director_amount,
                 "source_file": "TECHDIR_MASTER",
-                "vendor": "",
+                "vendor": default_vendor,
                 "department": "",
-                "zone": "",
+                "zone": default_zone,
                 "power_watts": 0.0,
                 "import_batch": batch,
             }
