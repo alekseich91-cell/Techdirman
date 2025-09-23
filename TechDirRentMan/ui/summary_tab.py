@@ -601,6 +601,86 @@ def build_summary_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     page.zone_tabs = QtWidgets.QTabWidget()
     page.zone_tables: Dict[str, QtWidgets.QTableWidget] = {}
 
+    # При переключении вкладки зоны необходимо пересчитать итоговую сумму
+    # для выбранной зоны с учётом текущих фильтров и поискового текста.
+    # Полная перезагрузка таблиц через page._reload_zone_tabs на каждый
+    # клик приводит к циклическим обновлениям вкладок и может вызвать
+    # аварийное завершение (см. отчёт о падении). Вместо этого
+    # вычисляем сумму отдельно, не перестраивая всю таблицу. Создаём
+    # замыкание, которое получает индекс текущей вкладки и обновляет
+    # ``page.label_total``. Если извлечение значений вызывает
+    # исключения, они игнорируются.
+    def _update_total_on_zone_change(idx: int) -> None:
+        try:
+            # Получаем индекс выбранной зоны и соответствующий ключ
+            cur_idx = page.zone_tabs.currentIndex() if hasattr(page, "zone_tabs") else -1
+        except Exception:
+            cur_idx = -1
+        if cur_idx < 0:
+            return
+        cur_sum_val = 0.0
+        try:
+            keys = list(page.zone_tables.keys())
+            if 0 <= cur_idx < len(keys):
+                cur_zone_key = keys[cur_idx]
+                # Получаем активные фильтры
+                vendor_f = page.cmb_f_vendor.currentText()
+                if vendor_f == "<Все подрядчики>":
+                    vendor_f = "<ALL>"
+                department_f = page.cmb_f_department.currentText()
+                if department_f == "<Все отделы>":
+                    department_f = "<ALL>"
+                class_ru_f = page.cmb_f_class.currentText()
+                class_en_f = CLASS_RU2EN.get(class_ru_f) if class_ru_f and class_ru_f != "<Все классы>" else "<ALL>"
+                # Запрашиваем строки для текущей зоны и фильтров
+                rows_cur = page.db.list_items_filtered(
+                    project_id=page.project_id,
+                    vendor=vendor_f,
+                    department=department_f,
+                    zone=cur_zone_key,
+                    class_en=class_en_f,
+                    name_like=None,
+                ) or []
+                # Применяем поисковую строку, если есть
+                search_raw_f = page.ed_search.text() if hasattr(page, "ed_search") else ""
+                if search_raw_f:
+                    tmp_rows = []
+                    for r in rows_cur:
+                        try:
+                            nm = r.get("name", "") if isinstance(r, dict) else (r["name"] if r else "")
+                            ven = r.get("vendor", "") if isinstance(r, dict) else (r["vendor"] if r else "")
+                            dep = r.get("department", "") if isinstance(r, dict) else (r["department"] if r else "")
+                            zn = r.get("zone", "") if isinstance(r, dict) else (r["zone"] if r else "")
+                            if (
+                                contains_search(nm, search_raw_f)
+                                or contains_search(ven, search_raw_f)
+                                or contains_search(dep, search_raw_f)
+                                or contains_search(zn, search_raw_f)
+                            ):
+                                tmp_rows.append(r)
+                        except Exception:
+                            continue
+                    rows_cur = tmp_rows
+                # Суммируем amount
+                cur_sum_val = 0.0
+                for r in rows_cur:
+                    try:
+                        amt = r.get("amount") if isinstance(r, dict) else r["amount"]
+                        cur_sum_val += float(amt or 0.0)
+                    except Exception:
+                        continue
+        except Exception:
+            cur_sum_val = 0.0
+        # Обновляем текст в лейбле. Используем fmt_num для форматирования.
+        try:
+            page.label_total.setText(f"Итого: {fmt_num(cur_sum_val, 2)}")
+        except Exception:
+            pass
+    try:
+        page.zone_tabs.currentChanged.connect(_update_total_on_zone_change)
+    except Exception:
+        pass
+
     # 1.5 Компоновка
     v.addLayout(filt)
     v.addLayout(zbar)
@@ -1322,7 +1402,38 @@ def reload_zone_tabs(page: Any) -> None:
                     # Сохраняем все уникальные коэффициенты
                     rec.setdefault("coeff_values", set()).add(coeff)
             # Преобразуем агрегированные данные в строки таблицы
-            for rec in agg.values():
+            # Сортируем записи по имени группы, подрядчику и наименованию, чтобы
+            # элементы, объединённые в одну группу, отображались рядом. Это
+            # улучшает восприятие: все позиции с одинаковым group_name идут
+            # подряд, даже если были добавлены в разное время. Порядок
+            # сортировки: сначала имя группы (пустые/служебные в конец), затем
+            # подрядчик и наименование.
+            # Используем нормализованное значение имени группы для устойчивого
+            # сравнения, преобразуем в нижний регистр. Пустые строки
+            # упорядочиваются после пользовательских групп.
+            def _agg_sort_key(rec: Dict[str, Any]) -> Tuple[str, str, str]:
+                try:
+                    gname = rec.get("group_name", "")
+                    gnorm = str(gname).strip().lower() if gname else ""
+                except Exception:
+                    gnorm = ""
+                # Чтобы пустые и служебные группы отображались после
+                # пользовательских, добавляем префикс '~' к пустым ключам.
+                if not gnorm or gnorm in ("", "аренда оборудования"):
+                    gnorm_key = "~"  # тильда в ASCII следует после цифр/букв
+                else:
+                    gnorm_key = gnorm
+                try:
+                    vend = normalize_case(rec.get("vendor", ""))
+                except Exception:
+                    vend = ""
+                try:
+                    name = normalize_case(rec.get("name", ""))
+                except Exception:
+                    name = ""
+                return (gnorm_key, vend, name)
+
+            for rec in sorted(agg.values(), key=_agg_sort_key):
                 i = table.rowCount()
                 table.insertRow(i)
                 qty_total = rec["qty_sum"]
@@ -1382,13 +1493,13 @@ def reload_zone_tabs(page: Any) -> None:
                     gname = rec.get("group_name", "")
                 except Exception:
                     gname = ""
-                # Выполняем регистронезависимую проверку имени группы на пустое или служебное значение.
+                # Удаляем пробелы вокруг имени группы и приводим к нижнему регистру для проверки
                 try:
                     gname_lower = str(gname).strip().lower()
                 except Exception:
                     gname_lower = ""
-                # Вычисляем цвет группы заранее. Если группа пустая или служебная, цвет будет прозрачным.
-                group_color = _get_group_color(page, gname)
+                # Вычисляем цвет группы заранее. Передаём обрезанное имя, чтобы исключить случайные пробелы.
+                group_color = _get_group_color(page, str(gname).strip())
                 # Если группа не является пустой/служебной и не совпадает с наименованием позиции,
                 # выводим её перед именем позиции для читабельности.
                 if gname_lower and gname_lower not in ("", "аренда оборудования", display_name.lower()):
@@ -4406,11 +4517,19 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             items_for_db: list[Dict[str, Any]] = []
             catalog_entries: list[Dict[str, Any]] = []
             # Вспомогательная функция для добавления позиции в смету и каталог
-            def add_item(name: str, qty: float, unit_price: float) -> None:
+            def add_item(name: str, qty: float, unit_price: float, item_type: str = "equipment") -> None:
+                """
+                Добавляет позицию в списки для записи в БД и каталог.
+
+                :param name: отображаемое наименование позиции
+                :param qty: количество
+                :param unit_price: цена за единицу
+                :param item_type: тип позиции ('equipment', 'consumable', 'personnel', etc.)
+                """
                 amount = unit_price * qty
                 items_for_db.append({
                     "project_id": self.page.project_id,
-                    "type": "equipment",
+                    "type": item_type,
                     "group_name": f"Сценический подиум №{stage_id}",
                     "name": name,
                     "qty": qty,
@@ -4425,10 +4544,11 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                     "power_watts": 0.0,
                     "import_batch": batch,
                 })
+                # В каталоге храним класс как тип на английском языке (equipment, consumable и др.)
                 catalog_entries.append({
                     "name": name,
                     "unit_price": unit_price,
-                    "class": "equipment",
+                    "class": item_type,
                     # Также добавляем подрядчика в глобальный каталог
                     "vendor": vendor_selected,
                     "power_watts": 0.0,
@@ -4451,16 +4571,17 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 except Exception:
                     h_cm = int(self.ed_height.value() or 0)
                 add_item(f"Нога подиума {h_cm} см №{stage_id}", legs_count, price_leg)
-            # Ковралин
+            # Ковралин — относится к расходникам, поэтому используем тип consumable
             if carpet_enabled:
                 area = w * d
                 if area > 0:
-                    add_item(f"Ковралин подиума №{stage_id}", area, price_carpet)
-            # Раус: считаем переднюю ширину + две боковых глубины (задняя часть не учитывается)
+                    add_item(f"Ковралин подиума №{stage_id}", area, price_carpet, item_type="consumable")
+            # Раус — также расходный материал (декор), поэтому тип consumable
+            # Периметр рассчитывается как передняя ширина плюс две боковых глубины.
             if raus_enabled:
                 perimeter = w + 2.0 * d
                 if perimeter > 0:
-                    add_item(f"Раус подиума №{stage_id}", perimeter, price_raus)
+                    add_item(f"Раус подиума №{stage_id}", perimeter, price_raus, item_type="consumable")
             # Запись в базу и логирование
             try:
                 if items_for_db:
