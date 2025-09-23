@@ -108,8 +108,14 @@ def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
         gkey = normalize_case(group_name or "")
     except Exception:
         gkey = ""
-    # Не окрашиваем пустые и предопределённые группы
-    if not gkey or gkey in ("", "аренда оборудования"):
+    # Не окрашиваем пустые и предопределённые группы. Используем
+    # регистронезависимое сравнение, чтобы корректно обработать
+    # варианты 'Аренда оборудования', 'аренда оборудования' и т.п.
+    try:
+        gkey_lower = str(gkey).strip().lower()
+    except Exception:
+        gkey_lower = ""
+    if not gkey_lower or gkey_lower in ("", "аренда оборудования"):
         return QtGui.QColor(0, 0, 0, 0)
     # Инициализируем карту при первом использовании
     if not hasattr(page, "_group_colors") or not isinstance(page._group_colors, dict):
@@ -1376,10 +1382,16 @@ def reload_zone_tabs(page: Any) -> None:
                     gname = rec.get("group_name", "")
                 except Exception:
                     gname = ""
+                # Выполняем регистронезависимую проверку имени группы на пустое или служебное значение.
+                try:
+                    gname_lower = str(gname).strip().lower()
+                except Exception:
+                    gname_lower = ""
                 # Вычисляем цвет группы заранее. Если группа пустая или служебная, цвет будет прозрачным.
                 group_color = _get_group_color(page, gname)
-                if gname and gname not in ("", "аренда оборудования", display_name.lower()):
-                    # отображаем нормализованный вариант группы для читаемости
+                # Если группа не является пустой/служебной и не совпадает с наименованием позиции,
+                # выводим её перед именем позиции для читабельности.
+                if gname_lower and gname_lower not in ("", "аренда оборудования", display_name.lower()):
                     display_name = f"{normalize_case(gname)}: {display_name}"
                 # Формируем список отображаемых значений
                 vals = [
