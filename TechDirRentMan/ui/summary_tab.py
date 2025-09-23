@@ -3997,34 +3997,38 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             layout.addWidget(btns)
             btns.accepted.connect(self.accept)
             btns.rejected.connect(self.reject)
-            def accept(self) -> None:  # type: ignore
-                # Получаем основные размеры и параметры
-                w = float(self.ed_width.value())
-                d = float(self.ed_depth.value())
-                steps = int(self.spin_steps.value())
-                price_2x1 = float(self.price_2x1.value())
-                price_1x1 = float(self.price_1x1.value())
-                price_1x0_5 = float(self.price_1x0_5.value())
-                price_step = float(self.price_step.value())
-                price_leg = float(self.price_leg.value())
-                use_ship = self.chk_ship.isChecked()
-                # Номер сцены, указанный пользователем
-                try:
-                    stage_id = int(self.spin_stage.value())
-                except Exception:
-                    stage_id = 1
-                # Сохраняем цены ковралина и рауса (если включены)
-                carpet_enabled = self.chk_carpet.isChecked()
-                try:
-                    price_carpet = float(self.price_carpet.value()) if carpet_enabled else 0.0
-                except Exception:
-                    price_carpet = 0.0
-                raus_enabled = self.chk_raus.isChecked()
-                try:
-                    price_raus = float(self.price_raus.value()) if raus_enabled else 0.0
-                except Exception:
-                    price_raus = 0.0
-                segments_x: list[float] = []
+            # accept method defined below at class level
+
+        def accept(self) -> None:  # type: ignore
+            """Собирает параметры подиума, рассчитывает необходимые элементы и добавляет их в смету."""
+            # Получаем основные размеры и параметры
+            w = float(self.ed_width.value())
+            d = float(self.ed_depth.value())
+            steps = int(self.spin_steps.value())
+            price_2x1 = float(self.price_2x1.value())
+            price_1x1 = float(self.price_1x1.value())
+            price_1x0_5 = float(self.price_1x0_5.value())
+            price_step = float(self.price_step.value())
+            price_leg = float(self.price_leg.value())
+            use_ship = self.chk_ship.isChecked()
+            # Номер сцены, указанный пользователем
+            try:
+                stage_id = int(self.spin_stage.value())
+            except Exception:
+                stage_id = 1
+            # Сохраняем цены ковралина и рауса (если включены)
+            carpet_enabled = self.chk_carpet.isChecked()
+            try:
+                price_carpet = float(self.price_carpet.value()) if carpet_enabled else 0.0
+            except Exception:
+                price_carpet = 0.0
+            raus_enabled = self.chk_raus.isChecked()
+            try:
+                price_raus = float(self.price_raus.value()) if raus_enabled else 0.0
+            except Exception:
+                price_raus = 0.0
+            # Разбиваем размеры на сегменты по 2, 1 и 0.5 метра
+            segments_x: list[float] = []
             rem_w = w
             eps = 1e-6
             while rem_w > eps:
@@ -4049,6 +4053,7 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 else:
                     segments_y.append(0.5)
                     rem_d = 0.0
+            # Считаем количество модулей каждого типа
             count_2x1 = 0
             count_1x1 = 0
             count_1x0_5 = 0
@@ -4067,14 +4072,16 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                             count_1x1 += 1
                         else:
                             count_1x0_5 += 1
+            # Количество ножек: зависит от режима (шип‑паз) и наличия ступенек
             if use_ship:
                 legs_count = (len(segments_x) + 1) * (len(segments_y) + 1) + steps * 4
             else:
                 legs_count = 4 * (count_2x1 + count_1x1 + count_1x0_5 + steps)
-                import datetime
-                batch = f"stage-{datetime.datetime.utcnow().isoformat()}"
-            items_for_db = []
-            catalog_entries = []
+            import datetime
+            batch = f"stage-{datetime.datetime.utcnow().isoformat()}"
+            items_for_db: list[Dict[str, Any]] = []
+            catalog_entries: list[Dict[str, Any]] = []
+            # Вспомогательная функция для добавления позиции в смету и каталог
             def add_item(name: str, qty: float, unit_price: float) -> None:
                 amount = unit_price * qty
                 items_for_db.append({
@@ -4101,31 +4108,34 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                     "power_watts": 0.0,
                     "department": "",
                 })
+            # Добавляем панели
             if count_2x1 > 0:
                 add_item(f"Панель подиума 2×1 м №{stage_id}", count_2x1, price_2x1)
             if count_1x1 > 0:
                 add_item(f"Панель подиума 1×1 м №{stage_id}", count_1x1, price_1x1)
             if count_1x0_5 > 0:
                 add_item(f"Панель подиума 1×0.5 м №{stage_id}", count_1x0_5, price_1x0_5)
+            # Ступеньки
             if steps > 0:
                 add_item(f"Ступенька подиума №{stage_id}", steps, price_step)
-                if legs_count > 0:
-                    # В название ножек добавляем высоту в сантиметрах
-                    try:
-                        h_cm = int(float(self.ed_height.value()))
-                    except Exception:
-                        h_cm = int(self.ed_height.value() or 0)
-                    add_item(f"Нога подиума {h_cm} см №{stage_id}", legs_count, price_leg)
-                # Если выбран ковралин – добавляем его с количеством = площади сцены
-                if carpet_enabled:
-                    area = w * d
-                    if area > 0:
-                        add_item(f"Ковралин подиума №{stage_id}", area, price_carpet)
-                # Если выбран раус – добавляем его с количеством = периметру (2*(ширина+глубина))
-                if raus_enabled:
-                    perimeter = 2.0 * (w + d)
-                    if perimeter > 0:
-                        add_item(f"Раус подиума №{stage_id}", perimeter, price_raus)
+            # Ножки подиума
+            if legs_count > 0:
+                try:
+                    h_cm = int(float(self.ed_height.value()))
+                except Exception:
+                    h_cm = int(self.ed_height.value() or 0)
+                add_item(f"Нога подиума {h_cm} см №{stage_id}", legs_count, price_leg)
+            # Ковралин
+            if carpet_enabled:
+                area = w * d
+                if area > 0:
+                    add_item(f"Ковралин подиума №{stage_id}", area, price_carpet)
+            # Раус
+            if raus_enabled:
+                perimeter = 2.0 * (w + d)
+                if perimeter > 0:
+                    add_item(f"Раус подиума №{stage_id}", perimeter, price_raus)
+            # Запись в базу и логирование
             try:
                 if items_for_db:
                     self.page.db.add_items_bulk(items_for_db)
@@ -4143,10 +4153,12 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                     pass
                 QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось добавить подиум: {ex}")
                 return
+            # Обновляем вкладки зон
             try:
                 self.page._reload_zone_tabs()
             except Exception:
                 pass
+            # Закрываем диалог
             super().accept()
     dlg = StageMasterDialog(page, zone_name)
     dlg.exec()
