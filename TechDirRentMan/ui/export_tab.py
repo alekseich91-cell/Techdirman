@@ -483,6 +483,21 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     fin_layout.addWidget(chk_fin_with_tax)
     fin_layout.addWidget(chk_fin_zones_only)
     fin_layout.addWidget(chk_fin_zones_by_vendor)
+    # Новый флажок: специальный формат отчёта для Ксюши
+    chk_fin_ksyusha = QtWidgets.QCheckBox("Отчёт для Ксюши")
+    fin_layout.addWidget(chk_fin_ksyusha)
+    # При выборе отчёта для Ксюши отключаем остальные параметры финансового отчёта,
+    # поскольку они не применяются к данному формату. Если флажок снят, возвращаем
+    # доступность остальных настроек.
+    def _toggle_fin_ksyusha(state: bool) -> None:
+        try:
+            for w in (chk_fin_agents, chk_fin_internal, chk_fin_internal_only, chk_fin_with_tax, chk_fin_zones_only, chk_fin_zones_by_vendor):
+                w.setEnabled(not state)
+                if state:
+                    w.setChecked(False)
+        except Exception:
+            pass
+    chk_fin_ksyusha.toggled.connect(_toggle_fin_ksyusha)
     fin_layout.addStretch(1)
     stack.addWidget(fin_widget)
 
@@ -683,6 +698,10 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                 # Режим: разбивать суммы по подрядчикам внутри каждой зоны.
                 # Работает только при включённой опции "zones_only".
                 "zones_by_vendor": chk_fin_zones_by_vendor.isChecked(),
+                # Специальный отчёт для Ксюши: простой финансовый отчёт с
+                # минимальными колонками. При его выборе другие опции
+                # финансового отчёта отключаются.
+                "for_ksyusha": chk_fin_ksyusha.isChecked(),
             },
             # Опции тайминга
             "timing": {
@@ -1258,8 +1277,8 @@ def generate_pdf(
                 except Exception:
                     vendor_tax = {}
                 fin_opts["vendor_tax"] = vendor_tax
-            # Если отчёт не является внутренним (internal_only=False), выводим шапку с итогами
-            if not fin_opts.get("internal_only", False):
+            # Если отчёт не является внутренним (internal_only=False) и не формат «Ксюша», выводим шапку с итогами
+            if not fin_opts.get("internal_only", False) and not fin_opts.get("for_ksyusha", False):
                 try:
                     subtotal_sum, tax_sum, total_sum = _compute_fin_report_totals(page, fin_opts)
                     # Формируем строку шапки: Итого, Налог, Итого с налогом
@@ -2436,6 +2455,11 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
         если None, подсветка не применяется
     :return: список элементов отчёта
     """
+    # Если выбран специальный формат отчёта для Ксюши, делегируем построение
+    # упрощённого финансового отчёта. В этом режиме игнорируются другие
+    # параметры (внутренние, зоны и т.п.) и создаётся таблица подрядчик/суммы.
+    if fin_opts.get("for_ksyusha", False):
+        return _build_fin_report_ksyusha(page, fin_opts, header_style, normal_style)
     elements: List[Any] = []
     try:
         # Получаем виджет бухгалтерии или провайдер для сбора данных
@@ -3613,6 +3637,155 @@ def _compute_fin_report_totals(page: Any, fin_opts: Dict[str, Any]) -> Tuple[flo
         # Логируем ошибку и возвращаем нули
         logger.error("Ошибка вычисления итогов для финансового отчёта", exc_info=True)
         return (0.0, 0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Специальный отчёт «для Ксюши».  Формирует упрощённую таблицу, где для
+# каждого подрядчика выводятся две суммы: «Сумма по смете» (с учётом
+# скидок и налога, но без учёта комиссии) и «Сумма к оплате» (с учётом
+# скидок, комиссии и налога).  В начале отчёта выводятся общие итоги
+# проекта для этих сумм.  Остальные параметры финансового отчёта
+# (например, сортировка по зонам, отображение внутренней информации) не
+# используются.
+
+def _build_fin_report_ksyusha(
+    page: Any,
+    fin_opts: Dict[str, Any],
+    header_style: ParagraphStyle,
+    normal_style: ParagraphStyle,
+) -> List[Any]:
+    """Строит упрощённый финансовый отчёт для Ксюши.
+
+    :param page: объект страницы проекта
+    :param fin_opts: словарь опций (используется только флаг with_tax для выбора налогов)
+    :param header_style: стиль заголовка
+    :param normal_style: стиль обычного текста
+    :return: список элементов PDF‑отчёта
+    """
+    elements: List[Any] = []
+    try:
+        # Получаем виджет бухгалтерии для доступа к агрегированным данным
+        ft = getattr(page, "tab_finance_widget", None)
+        # Собираем агрегированные данные по подрядчикам: суммы оборудования и прочего
+        agg: Dict[str, Dict[str, float]] = {}
+        if ft and hasattr(ft, "_agg_latest") and ft._agg_latest:
+            agg = ft._agg_latest  # type: ignore
+        else:
+            # Создаём агрегатор самостоятельно, проходя по всем позициям проекта
+            items: List[Any] = []
+            if ft and hasattr(ft, "items"):
+                items = list(ft.items)
+            elif getattr(page, "db", None) and getattr(page, "project_id", None):
+                try:
+                    from .finance_tab import DBDataProvider  # type: ignore
+                    prov = DBDataProvider(page)
+                    items = prov.load_items() or []
+                except Exception:
+                    items = []
+            for it in items:
+                try:
+                    v = getattr(it, "vendor", "") or "(без подрядчика)"
+                    data = agg.get(v, {"equip_sum": 0.0, "other_sum": 0.0})
+                    amt = 0.0
+                    try:
+                        amt = float(it.amount())
+                    except Exception:
+                        amt = 0.0
+                    try:
+                        cls = getattr(it, "cls", "")
+                    except Exception:
+                        cls = ""
+                    if cls == "equipment":
+                        data["equip_sum"] += amt
+                    else:
+                        data["other_sum"] += amt
+                    agg[v] = data
+                except Exception:
+                    continue
+        # Получаем процент скидки, комиссии и налога для каждого подрядчика из FinanceTab
+        discount_map: Dict[str, float] = {}
+        commission_map: Dict[str, float] = {}
+        tax_map: Dict[str, float] = {}
+        if ft:
+            try:
+                discount_map = {normalize_case(v): float(ft.preview_discount_pct.get(v, 0.0)) / 100.0 for v in ft.preview_discount_pct}
+            except Exception:
+                discount_map = {}
+            try:
+                commission_map = {normalize_case(v): float(ft.preview_commission_pct.get(v, 0.0)) / 100.0 for v in ft.preview_commission_pct}
+            except Exception:
+                commission_map = {}
+            try:
+                tax_map = {normalize_case(v): float(ft.preview_tax_pct.get(v, 0.0)) / 100.0 for v in ft.preview_tax_pct}
+            except Exception:
+                tax_map = {}
+        # Составляем таблицу данных по каждому подрядчику
+        table_data: List[List[str]] = [["Подрядчик", "Сумма по смете ₽", "Сумма к оплате ₽"]]
+        total_smeta: float = 0.0
+        total_pay: float = 0.0
+        for vendor in sorted(agg.keys()):
+            data = agg[vendor]
+            equip_sum = float(data.get("equip_sum", 0.0))
+            other_sum = float(data.get("other_sum", 0.0))
+            total_before = equip_sum + other_sum
+            # Проценты скидки, комиссии и налога
+            disc_pct = discount_map.get(normalize_case(vendor), 0.0)
+            comm_pct = commission_map.get(normalize_case(vendor), 0.0)
+            tax_pct = tax_map.get(normalize_case(vendor), 0.0)
+            # Рассчитываем сумму скидки от общей суммы
+            disc_amt = total_before * disc_pct
+            # "Сумма по смете" – это сумма, которую оплачиваем подрядчику с учётом налога,
+            # но без учёта комиссии. Т.е. из общей суммы вычитаем скидку и добавляем налог.
+            smeta_sum = (total_before - disc_amt) * (1.0 + tax_pct)
+            # Сумма комиссии считается от общей суммы перед скидкой (согласно
+            # требованиям пользователя), затем вычитается из суммы после скидки.
+            comm_amt = total_before * comm_pct
+            pay_sum = (total_before - disc_amt - comm_amt) * (1.0 + tax_pct)
+            total_smeta += smeta_sum
+            total_pay += pay_sum
+            # Форматируем строки: используем неразрывный пробел для отделения тысяч
+            try:
+                smeta_str = f"{smeta_sum:,.2f}".replace(",", " ")
+            except Exception:
+                smeta_str = f"{smeta_sum:.2f}"
+            try:
+                pay_str = f"{pay_sum:,.2f}".replace(",", " ")
+            except Exception:
+                pay_str = f"{pay_sum:.2f}"
+            table_data.append([
+                vendor,
+                smeta_str,
+                pay_str,
+            ])
+        # Формируем заголовок с итогами
+        try:
+            smeta_total_str = f"{total_smeta:,.2f}".replace(",", " ")
+        except Exception:
+            smeta_total_str = f"{total_smeta:.2f}"
+        try:
+            pay_total_str = f"{total_pay:,.2f}".replace(",", " ")
+        except Exception:
+            pay_total_str = f"{total_pay:.2f}"
+        header_line = f"Итого: {smeta_total_str} ₽; Итого к оплате: {pay_total_str} ₽"
+        elements.append(Paragraph(header_line, header_style))
+        elements.append(Spacer(1, 4 * mm))
+        # Создаём таблицу ReportLab
+        col_widths = [80 * mm, 50 * mm, 50 * mm]
+        try:
+            table = Table(table_data, repeatRows=1, colWidths=col_widths)
+            from reportlab.platypus import TableStyle as LocalTableStyle
+            table.setStyle(LocalTableStyle([
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("FONTNAME", (0, 1), (-1, -1), "DejaVuSans"),
+            ]))
+        except Exception:
+            table = Table(table_data, repeatRows=1)
+        elements.append(table)
+    except Exception:
+        logger.error("Ошибка создания упрощённого финансового отчёта (Ксюша)", exc_info=True)
+    return elements
 
 
 def _build_timing_report(

@@ -76,6 +76,54 @@ import json
 from pathlib import Path
 import logging
 
+# ---------------------------------------------------------------------------
+# Палитра цветов для отображения групп в сводной смете. При нехватке цветов
+# они циклически повторяются. Цвета подобраны так, чтобы обеспечить
+# различимость и читабельность на светлом фоне. Пользовательские группы
+# получают цвет в порядке их появления.
+GROUP_COLOR_PALETTE: List[QtGui.QColor] = [
+    QtGui.QColor(255, 102, 102),   # светло‑красный
+    QtGui.QColor(255, 153, 102),   # персиковый
+    QtGui.QColor(255, 204, 102),   # нежно‑оранжевый
+    QtGui.QColor(204, 255, 102),   # салатовый
+    QtGui.QColor(102, 255, 178),   # бирюзовый
+    QtGui.QColor(102, 178, 255),   # голубой
+    QtGui.QColor(178, 102, 255),   # сиреневый
+    QtGui.QColor(255, 102, 178),   # розовый
+]
+
+def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
+    """Возвращает цвет для указанной группы.
+
+    Цвет выбирается из глобальной палитры и сохраняется в атрибуте
+    ``page._group_colors``. Пустое имя группы или служебное значение
+    ('аренда оборудования') возвращает прозрачный цвет, чтобы не
+    окрашивать такие строки. При исчерпании палитры цвета повторяются.
+
+    :param page: объект ProjectPage, в котором хранится карта цветов
+    :param group_name: исходное имя группы
+    :return: QColor с выбранным цветом или прозрачный QColor
+    """
+    try:
+        gkey = normalize_case(group_name or "")
+    except Exception:
+        gkey = ""
+    # Не окрашиваем пустые и предопределённые группы
+    if not gkey or gkey in ("", "аренда оборудования"):
+        return QtGui.QColor(0, 0, 0, 0)
+    # Инициализируем карту при первом использовании
+    if not hasattr(page, "_group_colors") or not isinstance(page._group_colors, dict):
+        page._group_colors = {}
+    # Возвращаем уже назначенный цвет
+    col = page._group_colors.get(gkey)
+    if col is not None:
+        return col
+    # Назначаем следующий цвет из палитры
+    idx = len(page._group_colors) % len(GROUP_COLOR_PALETTE)
+    col = GROUP_COLOR_PALETTE[idx]
+    page._group_colors[gkey] = col
+    return col
+
 def compute_fin_snapshot_data(page: Any) -> Dict[str, Any]:
     """
     Собирает агрегированные данные для финансового отчёта.
@@ -1301,6 +1349,8 @@ def reload_zone_tabs(page: Any) -> None:
                     gname = rec.get("group_name", "")
                 except Exception:
                     gname = ""
+                # Вычисляем цвет группы заранее. Если группа пустая или служебная, цвет будет прозрачным.
+                group_color = _get_group_color(page, gname)
                 if gname and gname not in ("", "аренда оборудования", display_name.lower()):
                     # отображаем нормализованный вариант группы для читаемости
                     display_name = f"{normalize_case(gname)}: {display_name}"
@@ -1325,6 +1375,12 @@ def reload_zone_tabs(page: Any) -> None:
                     # Разрешаем редактирование только для количества, коэффициента и цены (столбцы 1,2,3)
                     if c not in (1, 2, 3):
                         item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                    # Окрашиваем только название (колонка 0) для элементов, входящих в группу
+                    try:
+                        if c == 0 and group_color.alpha() > 0:
+                            item.setForeground(QtGui.QBrush(group_color))
+                    except Exception:
+                        pass
                     table.setItem(i, c, item)
                 total_amount += rec["amount_sum"]
         table.blockSignals(False)
