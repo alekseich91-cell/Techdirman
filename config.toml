@@ -1,0 +1,3 @@
+[app]
+db_path="data/app.sqlite"
+log_path="logs/app.log"

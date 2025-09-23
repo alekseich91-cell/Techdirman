@@ -1,0 +1,22 @@
+{
+  "title": "Метро с оркестром 1 день",
+  "date": "18 на 19 сентября",
+  "customer": "",
+  "mount_dt": "ночь с 17 на 18 (выгружаемся на станцию с 01:30) 18 в 21:00 монтаж",
+  "site_ready": "19 сентяьря 01:00",
+  "address": "Платформа метро Маяковская",
+  "site_ready_dup": "",
+  "dismount_time": "19 сентября 3:30 ночи до 5:30. Вывоз 20 сентября с 01:30",
+  "floor_elevator": "Спуск по Эскалатору",
+  "power_capacity": "40квт???",
+  "storage_possible": "Островки на станции 250х800 6 шт",
+  "comments": "",
+  "cover_path": null,
+  "cash_total": "6 190 090.00 ₽",
+  "tax_total": "7 012 304.75 ₽",
+  "commission_each": "—",
+  "commission_sum": "0.00 ₽",
+  "discount_each": "—",
+  "discount_sum": "0.00 ₽",
+  "power_sum": "0.00 кВт"
+}

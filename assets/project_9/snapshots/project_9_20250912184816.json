@@ -1,0 +1,239 @@
+{
+  "project_id": 9,
+  "name": "ЕПТА",
+  "zones": [
+    "5 Сентября",
+    "6 Сентября",
+    "7 Сентября",
+    "8 Сентября"
+  ],
+  "items": {
+    "1450": {
+      "id": 1450,
+      "name": "Hollyland C1-pro",
+      "qty": 9.0,
+      "coeff": 1.0,
+      "unit_price": 2000.0,
+      "amount": 18000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "5 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1451": {
+      "id": 1451,
+      "name": "Hollyland C1 Pro Hub",
+      "qty": 2.0,
+      "coeff": 1.0,
+      "unit_price": 4000.0,
+      "amount": 8000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "5 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1452": {
+      "id": 1452,
+      "name": "Доставка Вместе С Прокатом",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "5 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1453": {
+      "id": 1453,
+      "name": "Обслуживание Техником От Проката По Совмещению",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "5 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1454": {
+      "id": 1454,
+      "name": "Hollyland C1-pro",
+      "qty": 14.0,
+      "coeff": 1.0,
+      "unit_price": 2000.0,
+      "amount": 28000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "6 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1455": {
+      "id": 1455,
+      "name": "Hollyland C1 Pro Hub",
+      "qty": 2.0,
+      "coeff": 1.0,
+      "unit_price": 4000.0,
+      "amount": 8000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "6 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1457": {
+      "id": 1457,
+      "name": "Доставка Вместе С Прокатом",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "7 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1458": {
+      "id": 1458,
+      "name": "Доставка Вместе С Прокатом",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "8 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1459": {
+      "id": 1459,
+      "name": "Доставка Вместе С Прокатом",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "6 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1460": {
+      "id": 1460,
+      "name": "Обслуживание Техником От Проката По Совмещению",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "6 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1461": {
+      "id": 1461,
+      "name": "Обслуживание Техником От Проката По Совмещению",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "7 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1462": {
+      "id": 1462,
+      "name": "Hollyland C1 Pro Hub",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "7 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1463": {
+      "id": 1463,
+      "name": "Hollyland C1-pro",
+      "qty": 7.0,
+      "coeff": 1.0,
+      "unit_price": 2000.0,
+      "amount": 14000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "7 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1464": {
+      "id": 1464,
+      "name": "Hollyland C1-pro",
+      "qty": 5.0,
+      "coeff": 1.0,
+      "unit_price": 2000.0,
+      "amount": 10000.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "8 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1465": {
+      "id": 1465,
+      "name": "Hollyland C1 Pro Hub",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Лунев",
+      "department": "Связь",
+      "zone": "8 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    },
+    "1466": {
+      "id": 1466,
+      "name": "Обслуживание Техником От Проката По Совмещению",
+      "qty": 1.0,
+      "coeff": 1.0,
+      "unit_price": 0.0,
+      "amount": 0.0,
+      "vendor": "Широков",
+      "department": "Связь",
+      "zone": "8 Сентября",
+      "class": "equipment",
+      "power_watts": 0.0
+    }
+  },
+  "fin_snapshot": {
+    "vendors": {
+      "Лунев": 86000.0,
+      "Широков": 0.0
+    },
+    "zones": {
+      "5 Сентября": 26000.0,
+      "6 Сентября": 36000.0,
+      "7 Сентября": 14000.0,
+      "8 Сентября": 10000.0
+    },
+    "departments": {
+      "Связь": 86000.0
+    },
+    "classes": {
+      "equipment": 86000.0
+    },
+    "project_total": 86000.0
+  }
+}

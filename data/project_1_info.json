@@ -1,0 +1,22 @@
+{
+  "title": "метро тестовый",
+  "date": "18 на 19 сентября",
+  "customer": "",
+  "mount_dt": "",
+  "site_ready": "",
+  "address": "",
+  "site_ready_dup": "",
+  "dismount_time": "",
+  "floor_elevator": "",
+  "power_capacity": "",
+  "storage_possible": "",
+  "comments": "",
+  "cover_path": "/Users/lunia/Desktop/ТЕС3/TechDirRentMan_DESKTOP_STABLE_v3/assets/project_1/cover.jpg",
+  "cash_total": "0,00",
+  "tax_total": "0,00",
+  "commission_each": "—",
+  "commission_sum": "0,00",
+  "discount_each": "—",
+  "discount_sum": "0,00",
+  "power_sum": "0"
+}
