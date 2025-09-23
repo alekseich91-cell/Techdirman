@@ -1154,8 +1154,14 @@ def rename_zone(page: Any) -> None:
     if cur_index < 0:
         return
     old_label = page.zone_tabs.tabText(cur_index)
-    # Ключ текущей зоны: пустая строка для "Без зоны"
-    old_zone = "" if old_label == "Без зоны" else old_label
+    # 6.1.1 Приводим имя текущей зоны к каноничному виду.
+    # строка "Без зоны" и пустые/None значения считаются пустой зоной ("").
+    old_zone = _canon_zone(old_label)
+    # Логируем начало операции для диагностики.
+    logging.getLogger(__name__).info(
+        "Начато переименование зоны: текущая=%s (canon=%s)",
+        old_label or "<Без зоны>", old_zone or "<без зоны>",
+    )
     # Запрашиваем новое имя
     new_name, ok = QtWidgets.QInputDialog.getText(
         page,
@@ -1167,22 +1173,32 @@ def rename_zone(page: Any) -> None:
         return
     # Нормализуем введённый текст
     new_name_norm = normalize_case(new_name)
-    # Пустая строка интерпретируется как зона без имени ("Без зоны")
-    new_zone = "" if not new_name_norm else new_name_norm
+    # Приводим новое имя к каноничному виду. Пустая строка или "Без зоны"
+    # интерпретируется как зона без имени.
+    new_zone = _canon_zone(new_name_norm)
     # Если имя не изменилось — ничего не делаем
     if new_zone == old_zone:
+        logging.getLogger(__name__).info(
+            "Переименование зоны отменено: новое имя совпадает с текущим."
+        )
         return
-    # Проверяем дубликат
-    if new_zone in page.zone_tables:
+    # Проверяем дубликат (с учётом регистра) среди уже созданных зон.
+    existing_lower = {str(k).lower() for k in page.zone_tables.keys()}
+    if new_zone.lower() in existing_lower:
         QtWidgets.QMessageBox.information(
             page, "Информация", "Зона с таким названием уже существует."
+        )
+        logging.getLogger(__name__).info(
+            "Переименование зоны отменено: дубликат %s", new_zone
         )
         return
     # Переименовываем в БД
     try:
         if page.project_id is not None:
             # old_zone или new_zone могут быть пустой строкой, что означает NULL
-            page.db.rename_zone(page.project_id, old_zone or None, new_zone or None)
+            page.db.rename_zone(
+                page.project_id, old_zone or None, new_zone or None
+            )
     except Exception as ex:
         # Логируем и выводим информацию
         logging.getLogger(__name__).error(
@@ -1196,10 +1212,12 @@ def rename_zone(page: Any) -> None:
     table = page.zone_tables.get(old_zone)
     if table is None:
         return
+    # Удаляем старый ключ и присваиваем новый каноничный ключ.
     page.zone_tables.pop(old_zone, None)
     page.zone_tables[new_zone] = table
-    # Обновляем название вкладки
-    new_label = "Без зоны" if new_zone == "" else new_zone
+    # Обновляем название вкладки: для пустой зоны отображаем "Без зоны",
+    # иначе используем нормализованную форму для отображения.
+    new_label = "Без зоны" if new_zone == "" else normalize_case(new_name_norm)
     page.zone_tabs.setTabText(cur_index, new_label)
     # Обновляем выпадающий список зон для переноса
     page.cmb_move_zone.blockSignals(True)
@@ -1207,7 +1225,9 @@ def rename_zone(page: Any) -> None:
     page.cmb_move_zone.addItem("Без зоны", "")
     for z_key in page.zone_tables.keys():
         if z_key:
-            page.cmb_move_zone.addItem(z_key, z_key)
+            # Отображаем пользователю нормализованное название,
+            # но сохраняем канон как данные.
+            page.cmb_move_zone.addItem(normalize_case(z_key), z_key)
     page.cmb_move_zone.blockSignals(False)
     # Обновляем комбобокс для ручного добавления
     # Получаем зоны из БД (не учитывая пустую строку)
@@ -1240,17 +1260,27 @@ def rename_zone(page: Any) -> None:
     combined_zones: List[str] = []
     # Добавляем зоны из БД и из persist (без пустой строки) с учётом регистра
     for z in zones_db:
-        if z:
-            combined_zones.append(normalize_case(z))
+        c = _canon_zone(z)
+        if c:
+            disp = normalize_case(c)
+            if disp not in combined_zones:
+                combined_zones.append(disp)
     for z in updated_persisted:
-        if z and normalize_case(z) not in [normalize_case(x) for x in combined_zones]:
-            combined_zones.append(z)
+        c = _canon_zone(z)
+        if c:
+            disp = normalize_case(c)
+            if disp not in combined_zones:
+                combined_zones.append(disp)
     fill_manual_zone_combo(page, combined_zones)
     # Логируем переименование
     try:
         page._log(f"Зона «{old_label}» переименована в «{new_label}»")
     except Exception:
         pass
+    logging.getLogger(__name__).info(
+        "Зона '%s' переименована в '%s'",
+        old_label or "<Без зоны>", new_label,
+    )
     # Перезагружаем таблицы, чтобы обновить данные в колонке зоны
     try:
         # reload_zone_tabs_ext импортируется динамически в ProjectPage
@@ -1272,7 +1302,13 @@ def delete_zone(page: Any) -> None:
     if cur_index < 0:
         return
     zone_label = page.zone_tabs.tabText(cur_index).strip()
-    zone_key = "" if zone_label == "Без зоны" or not zone_label else zone_label
+    # 6.b.1 Канонический ключ зоны: пустая строка для любых вариантов "Без зоны".
+    zone_key = _canon_zone(zone_label)
+    # Логируем начало операции удаления
+    logging.getLogger(__name__).info(
+        "Запрошено удаление зоны: %s (canon=%s)",
+        zone_label or "<Без зоны>", zone_key or "<без зоны>",
+    )
     # Подтверждение
     reply = QtWidgets.QMessageBox.question(
         page, "Подтверждение",
@@ -1283,26 +1319,42 @@ def delete_zone(page: Any) -> None:
         return
     # Удаляем позиции из базы
     try:
-        cur = page.db._conn.cursor()
-        if not zone_key:
-            cur.execute("SELECT id FROM items WHERE project_id=? AND (zone IS NULL OR zone='')", (page.project_id,))
-        else:
-            cur.execute("SELECT id FROM items WHERE project_id=? AND zone=?", (page.project_id, zone_key))
-        ids = [int(r[0]) for r in cur.fetchall()]
+        ids: List[int] = []
+        if page.project_id is not None:
+            # Используем канонический ключ зоны для выборки элементов.
+            cur = page.db._conn.cursor()
+            if not zone_key:
+                # Для пустой зоны выбираем NULL или ''.
+                cur.execute(
+                    "SELECT id FROM items WHERE project_id=? AND COALESCE(zone,'')=''",
+                    (page.project_id,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id FROM items WHERE project_id=? AND COALESCE(zone,'')=?",
+                    (page.project_id, zone_key),
+                )
+            ids = [int(r[0]) for r in cur.fetchall()]
         if ids:
             page.db.delete_items(ids)
     except Exception as ex:
-        logging.getLogger(__name__).error("Ошибка удаления зоны '%s': %s", zone_label, ex, exc_info=True)
-        QtWidgets.QMessageBox.critical(page, "Ошибка", f"Не удалось удалить зону: {ex}")
+        logging.getLogger(__name__).error(
+            "Ошибка удаления зоны '%s': %s", zone_label, ex, exc_info=True
+        )
+        QtWidgets.QMessageBox.critical(
+            page, "Ошибка", f"Не удалось удалить зону: {ex}"
+        )
         return
     # Обновляем JSON-файл зон
     try:
         zones = _load_persisted_zones(page)
-        norm = zone_key.strip()
-        zones = [z for z in zones if z.strip() != norm]
+        # Удаляем удалённую зону по каноничному ключу
+        zones = [z for z in zones if _canon_zone(z).lower() != zone_key.lower()]
         _save_persisted_zones(page, zones)
     except Exception:
-        logging.getLogger(__name__).error("Не удалось обновить файл зон при удалении", exc_info=True)
+        logging.getLogger(__name__).error(
+            "Не удалось обновить файл зон при удалении", exc_info=True
+        )
     # Перестраиваем вкладки
     try:
         page._reload_zone_tabs()
@@ -1310,9 +1362,16 @@ def delete_zone(page: Any) -> None:
         pass
     # Лог
     try:
-        page._log(f"Смета: удалена зона «{zone_label or 'Без зоны'}» (удалено позиций: {len(ids) if 'ids' in locals() else 0}).")
+        page._log(
+            f"Смета: удалена зона «{zone_label or 'Без зоны'}» "
+            f"(удалено позиций: {len(ids) if 'ids' in locals() else 0})."
+        )
     except Exception:
         pass
+    logging.getLogger(__name__).info(
+        "Удалена зона '%s' (canon=%s), удалено позиций: %d",
+        zone_label or "<Без зоны>", zone_key or "<без зоны>", len(ids) if 'ids' in locals() else 0
+    )
 # 7. Перенос выделенных строк в другую зону
 def move_selected_to_zone(page: Any) -> None:
     """Перемещает выделенные позиции из текущей вкладки в выбранную зону."""
