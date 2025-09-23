@@ -81,10 +81,14 @@ import logging
 # они циклически повторяются. Цвета подобраны так, чтобы обеспечить
 # различимость и читабельность на светлом фоне. Пользовательские группы
 # получают цвет в порядке их появления.
+# Палитра групповых цветов. Чтобы избежать сочетания похожих
+# желтых и синих оттенков подряд, исключаем один из светлых
+# оранжевых цветов (255, 204, 102). Таким образом вероятность
+# соседства синих и желтых цветов снижается.
 GROUP_COLOR_PALETTE: List[QtGui.QColor] = [
     QtGui.QColor(255, 102, 102),   # светло‑красный
     QtGui.QColor(255, 153, 102),   # персиковый
-    QtGui.QColor(255, 204, 102),   # нежно‑оранжевый
+    # QtGui.QColor(255, 204, 102), # нежно‑оранжевый (исключён)
     QtGui.QColor(204, 255, 102),   # салатовый
     QtGui.QColor(102, 255, 178),   # бирюзовый
     QtGui.QColor(102, 178, 255),   # голубой
@@ -1334,9 +1338,11 @@ def reload_zone_tabs(page: Any) -> None:
                 vendor_norm = normalize_case(r["vendor"] or "")
                 zone_norm = normalize_case(r["zone"] or "")
                 department_norm = normalize_case(r["department"] or "")
-                # Нормализуем имя группы. Пустая строка или 'Аренда оборудования'
-                # считаются отсутствием группы, чтобы не путать с произвольными названиями.
-                group_name_norm = normalize_case(r["group_name"] or "")
+                # Сохраняем имя группы в исходном виде (обрезаем пробелы). Пустая строка
+                # или 'Аренда оборудования' считаются отсутствием группы. Использование
+                # исходного значения позволяет избежать несоответствий, связанных с
+                # регистром или дополнительными символами в наименованиях.
+                group_name_norm = str(r["group_name"] or "").strip()
                 # Конструируем ключ агрегирования так, чтобы каждую позицию
                 # обрабатывать отдельно: используем уникальный идентификатор.
                 # Таким образом, автоматическая агрегация одинаковых записей
@@ -1433,6 +1439,13 @@ def reload_zone_tabs(page: Any) -> None:
                     name = ""
                 return (gnorm_key, vend, name)
 
+            # Используем локальную карту цветов для групп, чтобы все элементы
+            # с одинаковым group_name получали один цвет на протяжении текущей
+            # загрузки. Это решает проблему, когда некоторые позиции в группе
+            # отображались без цвета. Группа «аренда оборудования» и пустые
+            # группы не окрашиваются.
+            local_group_colors: Dict[str, QtGui.QColor] = {}
+            next_color_index: int = 0
             for rec in sorted(agg.values(), key=_agg_sort_key):
                 i = table.rowCount()
                 table.insertRow(i)
@@ -1485,25 +1498,47 @@ def reload_zone_tabs(page: Any) -> None:
                     power_avg = rec["power_sum"] / qty_total
                 # Русское отображение класса
                 class_ru_show = CLASS_EN2RU.get((rec.get("type") or "equipment"), "Оборудование")
-                # Для отображения имени учитываем группу: если имя группы задано и оно не
-                # совпадает с именем позиции, добавляем его в начале. Это позволяет
-                # визуально отделять элементы, принадлежащие одной группе.
-                display_name = rec["name"]
+                # Обрабатываем имя группы: убираем пробелы и приводим к нижнему регистру для проверки
                 try:
-                    gname = rec.get("group_name", "")
+                    gname = rec.get("group_name", "") or ""
                 except Exception:
                     gname = ""
-                # Удаляем пробелы вокруг имени группы и приводим к нижнему регистру для проверки
+                # Удаляем лишние пробелы и табуляции внутри группы: split() делит по любым пробельным символам,
+                # что устраняет неразрывные пробелы и двойные пробелы. Затем собираем через одиночный пробел.
                 try:
-                    gname_lower = str(gname).strip().lower()
+                    gname_clean = " ".join(str(gname).split())
+                except Exception:
+                    gname_clean = str(gname).strip() if gname else ""
+                gname_stripped = gname_clean
+                try:
+                    gname_lower = gname_stripped.lower()
                 except Exception:
                     gname_lower = ""
-                # Вычисляем цвет группы заранее. Передаём обрезанное имя, чтобы исключить случайные пробелы.
-                group_color = _get_group_color(page, str(gname).strip())
-                # Если группа не является пустой/служебной и не совпадает с наименованием позиции,
-                # выводим её перед именем позиции для читабельности.
-                if gname_lower and gname_lower not in ("", "аренда оборудования", display_name.lower()):
-                    display_name = f"{normalize_case(gname)}: {display_name}"
+                # Определяем цвет для группы: если группа непустая и не служебная, используем локальную карту
+                if gname_lower and gname_lower not in ("", "аренда оборудования"):
+                    # Назначаем цвет из локальной карты, при необходимости выбираем следующий
+                    col = local_group_colors.get(gname_lower)
+                    if col is None:
+                        col = GROUP_COLOR_PALETTE[next_color_index % len(GROUP_COLOR_PALETTE)]
+                        local_group_colors[gname_lower] = col
+                        next_color_index += 1
+                    group_color = col
+                else:
+                    group_color = QtGui.QColor(0, 0, 0, 0)
+                # Имя для отображения: убираем ведущие/конечные пробелы из наименования и
+                # добавляем название группы перед ним, если группа задана и отличается.
+                # Очищаем исходное наименование от лишних пробелов и других разделителей
+                try:
+                    base_name = " ".join(str(rec["name"]).split())
+                except Exception:
+                    base_name = " ".join(str(rec.get("name", "")).split())
+                display_name = base_name
+                try:
+                    name_lower = base_name.lower()
+                except Exception:
+                    name_lower = ""
+                if gname_lower and gname_lower not in ("", "аренда оборудования", name_lower):
+                    display_name = f"{normalize_case(gname_stripped)}: {display_name}"
                 # Формируем список отображаемых значений
                 vals = [
                     display_name,
@@ -4206,7 +4241,8 @@ def open_master_addition(page: Any) -> None:
             default_vendor = normalize_case("техдиректор")
             item = {
                 "project_id": self.page.project_id,
-                "type": "other",
+                # Для тех. директора используем тип 'personnel', чтобы позиция относилась к классу "Персонал"
+                "type": "personnel",
                 "group_name": "Технический директор",
                 "name": "Технический директор",
                 "qty": 1.0,
@@ -4227,7 +4263,8 @@ def open_master_addition(page: Any) -> None:
                         {
                             "name": item["name"],
                             "unit_price": item["unit_price"],
-                            "class": "other",
+                            # В каталоге класс также должен быть 'personnel'
+                            "class": "personnel",
                             "vendor": "",
                             "power_watts": 0.0,
                             "department": "",
