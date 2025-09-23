@@ -701,6 +701,10 @@ def init_zone_tabs(page: Any) -> None:
         label = "Без зоны" if not z else z
         table = build_zone_table(page)
         table.itemChanged.connect(page._on_summary_item_changed)
+        # Разрешаем пользовательское контекстное меню для группирования
+        table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        # Передаём ключ зоны через lambda, чтобы обработать меню для нужной таблицы
+        table.customContextMenuRequested.connect(lambda pos, z_key=z: on_zone_table_context_menu(page, z_key, pos))
         page.zone_tabs.addTab(table, label)
         page.zone_tables[z] = table
 
@@ -738,6 +742,179 @@ def fill_manual_zone_combo(page: Any, zones: List[str]) -> None:
             # Показываем нормализованный вариант, но храним исходный ключ
             page.cmb_add_zone.addItem(normalize_case(z), z)
     page.cmb_add_zone.blockSignals(False)
+
+
+# 4.a Контекстное меню таблицы зон: группирование и разъединение
+def on_zone_table_context_menu(page: Any, zone_key: str, pos: QtCore.QPoint) -> None:
+    """
+    Обрабатывает вызов контекстного меню для таблицы зоны.
+
+    Позволяет пользователю объединить выбранные позиции в группу или
+    разъединить существующую группу. Группы применяются только в рамках
+    сводной сметы и не влияют на расчёты. Для группировки применяется
+    поле ``group_name`` в таблице ``items``. После изменения группы
+    таблицы перезагружаются.
+
+    :param page: Экземпляр ProjectPage
+    :param zone_key: Ключ зоны (пустая строка для «Без зоны»)
+    :param pos: Координаты клика, переданные сигналом
+    """
+    try:
+        table = page.zone_tables.get(zone_key)
+    except Exception:
+        table = None
+    if not isinstance(table, QtWidgets.QTableWidget):
+        return
+    # Определяем выбранные строки
+    selected_indexes = sorted({idx.row() for idx in table.selectedIndexes()})
+    if not selected_indexes:
+        return
+    # Создаём меню
+    menu = QtWidgets.QMenu(table)
+    act_group = menu.addAction("Собрать в группу")
+    act_ungroup = menu.addAction("Разъединить группу")
+    action = menu.exec(table.viewport().mapToGlobal(pos))
+    if action == act_group:
+        group_selected_items(page, zone_key)
+    elif action == act_ungroup:
+        ungroup_selected_items(page, zone_key)
+
+
+def group_selected_items(page: Any, zone_key: str) -> None:
+    """
+    Объединяет выделенные строки таблицы зоны в одну группу.
+
+    У пользователя запрашивается имя группы. При отмене диалога
+    никаких изменений не производится. После назначения group_name
+    перезагружаются вкладки зон и выводится сообщение в лог.
+
+    :param page: Экземпляр ProjectPage
+    :param zone_key: Ключ зоны, в которой выполняется группирование
+    """
+    table = page.zone_tables.get(zone_key)
+    if not isinstance(table, QtWidgets.QTableWidget):
+        return
+    selected_rows = sorted({idx.row() for idx in table.selectedIndexes()})
+    if not selected_rows:
+        return
+    # Запрашиваем имя группы у пользователя. Предлагаем вариант по умолчанию
+    # в формате «Группа n».
+    default_name = ""
+    try:
+        # Если все выделенные элементы уже принадлежат одной группе, предлагаем её имя
+        group_names: set[str] = set()
+        for r in selected_rows:
+            itm = table.item(r, 0)
+            if itm is None:
+                continue
+            item_id_data = itm.data(QtCore.Qt.ItemDataRole.UserRole)
+            try:
+                item_id = int(item_id_data)
+            except Exception:
+                continue
+            row_db = page.db.get_item_by_id(item_id)
+            if row_db is not None:
+                g = normalize_case(row_db["group_name"] or "")
+                if g:
+                    group_names.add(g)
+        if len(group_names) == 1:
+            default_name = next(iter(group_names))
+    except Exception:
+        default_name = ""
+    name, ok = QtWidgets.QInputDialog.getText(
+        page,
+        "Создание группы",
+        "Введите название группы:",
+        text=default_name or "Группа"
+    )
+    if not ok:
+        return
+    group_name = normalize_case(name.strip())
+    if not group_name:
+        return
+    updated_count = 0
+    for r in selected_rows:
+        itm = table.item(r, 0)
+        if itm is None:
+            continue
+        item_id_data = itm.data(QtCore.Qt.ItemDataRole.UserRole)
+        try:
+            item_id = int(item_id_data)
+        except Exception:
+            continue
+        try:
+            page.db.update_item_fields(item_id, {"group_name": group_name})
+            updated_count += 1
+        except Exception:
+            continue
+    # Логируем и перезагружаем данные
+    try:
+        if updated_count > 0 and hasattr(page, "_log"):
+            page._log(f"Группирование: {updated_count} позиций объединены в группу «{group_name}».")
+    except Exception:
+        pass
+    try:
+        page._reload_zone_tabs()
+    except Exception:
+        pass
+
+
+def ungroup_selected_items(page: Any, zone_key: str) -> None:
+    """
+    Разъединяет выделенные позиции, устанавливая для них уникальный group_name.
+
+    Для каждой выбранной строки group_name обновляется до её собственного
+    наименования позиции, что приводит к тому, что позиции больше не
+    связываются в одну группу. После обновления данные перезагружаются.
+
+    :param page: Экземпляр ProjectPage
+    :param zone_key: Ключ зоны, в которой выполняется разбиение
+    """
+    table = page.zone_tables.get(zone_key)
+    if not isinstance(table, QtWidgets.QTableWidget):
+        return
+    selected_rows = sorted({idx.row() for idx in table.selectedIndexes()})
+    if not selected_rows:
+        return
+    updated_count = 0
+    for r in selected_rows:
+        itm = table.item(r, 0)
+        if itm is None:
+            continue
+        item_id_data = itm.data(QtCore.Qt.ItemDataRole.UserRole)
+        try:
+            item_id = int(item_id_data)
+        except Exception:
+            continue
+        # Получаем наименование для новой группы
+        try:
+            row_db = page.db.get_item_by_id(item_id)
+        except Exception:
+            row_db = None
+        new_group = ""
+        try:
+            if row_db is not None:
+                nm = normalize_case(row_db["name"] or "")
+                # Чтобы избежать повторного группирования нескольких одинаковых элементов,
+                # используем уникальный идентификатор в имени группы
+                new_group = f"{nm} #{item_id}"
+        except Exception:
+            new_group = ""
+        # Обновляем group_name
+        try:
+            page.db.update_item_fields(item_id, {"group_name": new_group})
+            updated_count += 1
+        except Exception:
+            continue
+    try:
+        if updated_count > 0 and hasattr(page, "_log"):
+            page._log(f"Разъединение: {updated_count} позиций разъединены на отдельные группы.")
+    except Exception:
+        pass
+    try:
+        page._reload_zone_tabs()
+    except Exception:
+        pass
 
 
 # 4.1 Комбо отделов для ручного добавления
@@ -915,8 +1092,16 @@ def reload_zone_tabs(page: Any) -> None:
                 vendor_norm = normalize_case(r["vendor"] or "")
                 department_norm = normalize_case(r["department"] or "")
                 zone_norm = normalize_case(r["zone"] or "")
+                # При сравнении отображаем имя группы, если оно задано и отличается от имени позиции.
+                try:
+                    gname_s = normalize_case(r.get("group_name", ""))
+                except Exception:
+                    gname_s = ""
+                display_name_snap = name_norm
+                if gname_s and gname_s not in ("", "аренда оборудования", name_norm.lower()):
+                    display_name_snap = f"{normalize_case(gname_s)}: {name_norm}"
                 vals = [
-                    name_norm,
+                    display_name_snap,
                     state,
                     fmt_num(cur_qty, 3),
                     fmt_sign(diff_qty, 3),
@@ -1001,7 +1186,13 @@ def reload_zone_tabs(page: Any) -> None:
                 vendor_norm = normalize_case(r["vendor"] or "")
                 zone_norm = normalize_case(r["zone"] or "")
                 department_norm = normalize_case(r["department"] or "")
-                key = (name_norm, vendor_norm, zone_norm, department_norm)
+                # Нормализуем имя группы. Пустая строка или 'Аренда оборудования'
+                # считаются отсутствием группы, чтобы не путать с произвольными названиями.
+                group_name_norm = normalize_case(r["group_name"] or "")
+                # Конструируем ключ агрегирования так, чтобы позиции разных групп не
+                # объединялись. Это позволяет отображать позиции по группам. Если
+                # группы нет, используем пустую строку, чтобы поведение осталось прежним.
+                key = (name_norm, vendor_norm, zone_norm, department_norm, group_name_norm)
                 try:
                     qty = float(r["qty"] or 0)
                 except Exception:
@@ -1023,13 +1214,14 @@ def reload_zone_tabs(page: Any) -> None:
                 except Exception:
                     power = 0.0
                 if key not in agg:
-                    # Инициализируем запись агрегата
+                    # Инициализируем запись агрегата. Сохраняем group_name для отображения.
                     agg[key] = {
                         "id": r["id"],
                         "name": name_norm,
                         "vendor": vendor_norm,
                         "department": department_norm,
                         "zone": zone_norm,
+                        "group_name": group_name_norm,
                         "type": r["type"] or "equipment",
                         "qty_sum": qty,
                         "coeff_sum": coeff * qty,
@@ -1101,9 +1293,20 @@ def reload_zone_tabs(page: Any) -> None:
                     power_avg = rec["power_sum"] / qty_total
                 # Русское отображение класса
                 class_ru_show = CLASS_EN2RU.get((rec.get("type") or "equipment"), "Оборудование")
+                # Для отображения имени учитываем группу: если имя группы задано и оно не
+                # совпадает с именем позиции, добавляем его в начале. Это позволяет
+                # визуально отделять элементы, принадлежащие одной группе.
+                display_name = rec["name"]
+                try:
+                    gname = rec.get("group_name", "")
+                except Exception:
+                    gname = ""
+                if gname and gname not in ("", "аренда оборудования", display_name.lower()):
+                    # отображаем нормализованный вариант группы для читаемости
+                    display_name = f"{normalize_case(gname)}: {display_name}"
                 # Формируем список отображаемых значений
                 vals = [
-                    rec["name"],
+                    display_name,
                     fmt_num(qty_total, 3),
                     fmt_num(coeff_val, 3),
                     fmt_num(unit_price_val, 2),
@@ -3992,6 +4195,28 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             self.chk_ship = QtWidgets.QCheckBox("Использовать шип‑паз (общие ноги)")
             self.chk_ship.setChecked(False)
             form.addRow("Режим ног:", self.chk_ship)
+
+            # 23.a Выбор подрядчика для подиума
+            # Создаём выпадающий список подрядчиков, чтобы пользователь мог указать,
+            # от какого подрядчика заказывается сценический подиум. Список
+            # формируется на основе уникальных подрядчиков в каталоге. Поле editable,
+            # чтобы была возможность ввести нового подрядчика вручную.
+            self.cmb_vendor = QtWidgets.QComboBox()
+            self.cmb_vendor.setEditable(True)
+            # Заполняем существующими подрядчиками из каталога
+            vendors: list[str] = []
+            try:
+                if hasattr(self.page.db, "catalog_distinct_values"):
+                    vendors = self.page.db.catalog_distinct_values("vendor") or []
+            except Exception:
+                vendors = []
+            # Добавляем непустые имена подрядчиков
+            for v in vendors:
+                if v and v.strip():
+                    if self.cmb_vendor.findText(v, QtCore.Qt.MatchFlag.MatchFixedString) < 0:
+                        self.cmb_vendor.addItem(v)
+            # По умолчанию подрядчик не выбран
+            form.addRow("Подрядчик:", self.cmb_vendor)
             layout.addLayout(form)
             btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
             layout.addWidget(btns)
@@ -4001,6 +4226,12 @@ def open_stage_master(page: Any, zone_name: str) -> None:
 
         def accept(self) -> None:  # type: ignore
             """Собирает параметры подиума, рассчитывает необходимые элементы и добавляет их в смету."""
+            # Сохраняем выбранного подрядчика. Если пользователь оставил поле пустым,
+            # используем пустую строку. Это значение применяется ко всем позициям подиума.
+            try:
+                vendor_selected = self.cmb_vendor.currentText().strip()
+            except Exception:
+                vendor_selected = ""
             # Получаем основные размеры и параметры
             w = float(self.ed_width.value())
             d = float(self.ed_depth.value())
@@ -4053,25 +4284,23 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 else:
                     segments_y.append(0.5)
                     rem_d = 0.0
-            # Считаем количество модулей каждого типа
-            count_2x1 = 0
-            count_1x1 = 0
-            count_1x0_5 = 0
-            for sx in segments_x:
-                for sy in segments_y:
-                    if abs(sx - 2.0) < eps and abs(sy - 1.0) < eps:
-                        count_2x1 += 1
-                    elif abs(sx - 2.0) < eps and abs(sy - 0.5) < eps:
-                        count_1x0_5 += 2
-                    elif abs(sx - 1.0) < eps and abs(sy - 1.0) < eps:
-                        count_1x1 += 1
-                    elif abs(sx - 1.0) < eps and abs(sy - 0.5) < eps:
-                        count_1x0_5 += 1
-                    else:
-                        if sy >= 1.0 - eps:
-                            count_1x1 += 1
-                        else:
-                            count_1x0_5 += 1
+            # Считаем количество модулей каждого типа. Чтобы максимизировать количество модулей 2×1 м,
+            # используем площадь сцены. Однотипные модули считают по правилу:
+            # максимально заполняем площадь экрана модулями 2×1 (или 1×2), затем оставшаяся площадь
+            # покрывается модулями 1×1, а остаток в 0.5 м² закрывается 1×0.5 м. Такой подход
+            # позволяет, например, для сцены 5×3 м получить 7 модулей 2×1 и один модуль 1×1.
+            total_area = w * d
+            # округляем до ближайших 0.5 м², чтобы избежать накопления ошибок
+            area_units = round(total_area * 2) / 2.0
+            count_2x1 = int(area_units // 2.0)
+            remaining_units = area_units - count_2x1 * 2.0
+            count_1x1 = int(remaining_units // 1.0)
+            remaining_units -= count_1x1 * 1.0
+            # оставшуюся площадь переводим в количество модулей 1×0.5
+            if remaining_units > 1e-6:
+                count_1x0_5 = int(round(remaining_units / 0.5))
+            else:
+                count_1x0_5 = 0
             # Количество ножек: зависит от режима (шип‑паз) и наличия ступенек
             if use_ship:
                 legs_count = (len(segments_x) + 1) * (len(segments_y) + 1) + steps * 4
@@ -4094,7 +4323,8 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                     "amount": amount,
                     "unit_price": unit_price,
                     "source_file": "STAGE_MASTER",
-                    "vendor": "",
+                    # Используем выбранного пользователем подрядчика
+                    "vendor": vendor_selected,
                     "department": "",
                     "zone": self.zone_name or "",
                     "power_watts": 0.0,
@@ -4104,7 +4334,8 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                     "name": name,
                     "unit_price": unit_price,
                     "class": "equipment",
-                    "vendor": "",
+                    # Также добавляем подрядчика в глобальный каталог
+                    "vendor": vendor_selected,
                     "power_watts": 0.0,
                     "department": "",
                 })
@@ -4130,9 +4361,9 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 area = w * d
                 if area > 0:
                     add_item(f"Ковралин подиума №{stage_id}", area, price_carpet)
-            # Раус
+            # Раус: считаем переднюю ширину + две боковых глубины (задняя часть не учитывается)
             if raus_enabled:
-                perimeter = 2.0 * (w + d)
+                perimeter = w + 2.0 * d
                 if perimeter > 0:
                     add_item(f"Раус подиума №{stage_id}", perimeter, price_raus)
             # Запись в базу и логирование
