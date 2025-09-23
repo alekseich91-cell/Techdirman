@@ -3122,6 +3122,19 @@ def open_screen_master(page: Any) -> None:
             self.chk_vp.setChecked(True)
             layout.addWidget(self.chk_cable)
             layout.addWidget(self.chk_vp)
+            # Чекбокс и цена для конструктива (рама/конструктив для установки экрана)
+            self.chk_structure = QtWidgets.QCheckBox("Добавить конструктив")
+            self.chk_structure.setChecked(False)
+            self.spin_structure_price = QtWidgets.QDoubleSpinBox()
+            self.spin_structure_price.setDecimals(2)
+            self.spin_structure_price.setRange(0.0, 1_000_000.0)
+            self.spin_structure_price.setValue(0.0)
+            self.spin_structure_price.setSuffix(" ₽")
+            # Размещаем конструктив и его цену в одной строке
+            h_struct = QtWidgets.QHBoxLayout()
+            h_struct.addWidget(self.chk_structure)
+            h_struct.addWidget(self.spin_structure_price)
+            layout.addLayout(h_struct)
 
             # Кнопка выбора позиции из базы (экран)
             self.btn_select = QtWidgets.QPushButton("Выбрать экран из базы…")
@@ -3430,6 +3443,40 @@ def open_screen_master(page: Any) -> None:
             "power_watts": 0.0,
             "department": vp_department,
         })
+    # Конструктив для установки LED‑экрана (добавляется, если выбран соответствующий флаг)
+    # Конструктив представляет собой раму или набор крепежей для монтажа экрана.
+    if dlg.chk_structure.isChecked():
+        try:
+            struct_price = float(dlg.spin_structure_price.value() or 0.0)
+        except Exception:
+            struct_price = 0.0
+        struct_name = f"Конструктив для LED {id_val} {fmt_num(width, 2)}×{fmt_num(height, 2)} м"
+        items_for_db.append({
+            "project_id": page.project_id,
+            "type": "equipment",
+            "group_name": group_name_screen,
+            "name": struct_name,
+            "qty": 1.0,
+            "coeff": 1.0,
+            "amount": struct_price,
+            "unit_price": struct_price,
+            "source_file": "SCREEN_MASTER",
+            # Для конструктивов используем те же подрядчика и отдел, что и для экрана
+            "vendor": vendor,
+            "department": department,
+            "zone": "",
+            "power_watts": 0.0,
+            "import_batch": f"screen-{datetime.utcnow().isoformat()}"
+        })
+        catalog_entries.append({
+            "name": struct_name,
+            "unit_price": struct_price,
+            "class": "equipment",
+            "vendor": vendor,
+            "power_watts": 0.0,
+            "department": department,
+        })
+
     # Запись в базу
     try:
         page.db.add_items_bulk(items_for_db)
@@ -3833,6 +3880,7 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             layout.setSpacing(6)
             form = QtWidgets.QFormLayout()
             form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            # Размеры подиума (ширина, глубина, высота)
             self.ed_width = QtWidgets.QDoubleSpinBox()
             self.ed_width.setDecimals(2)
             self.ed_width.setRange(0.5, 100.0)
@@ -3851,6 +3899,62 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             form.addRow("Ширина:", self.ed_width)
             form.addRow("Глубина:", self.ed_depth)
             form.addRow("Высота:", self.ed_height)
+
+            # Номер подиума. Пользователь может указать любой номер,
+            # по умолчанию предлагается следующий после существующих.
+            self.spin_stage = QtWidgets.QSpinBox()
+            self.spin_stage.setRange(1, 9999)
+            # Определяем предложенный номер: ищем существующие подиумы и берём +1
+            try:
+                cur_id = self.page.db._conn.cursor()
+                cur_id.execute(
+                    "SELECT name FROM items WHERE project_id=? AND COALESCE(zone,'')=? AND name LIKE 'Сценический подиум №%'",
+                    (self.page.project_id, self.zone_name or ""),
+                )
+                rows_id = cur_id.fetchall()
+                import re as _re_stage
+                max_stage = 0
+                for r in rows_id:
+                    nm = r[0] if not isinstance(r, dict) else r.get("name")
+                    m = _re_stage.match(r"Сценический подиум №(\d+)", nm or "")
+                    if m:
+                        try:
+                            val = int(m.group(1))
+                            if val > max_stage:
+                                max_stage = val
+                        except Exception:
+                            continue
+                default_stage = max_stage + 1 if max_stage >= 1 else 1
+            except Exception:
+                default_stage = 1
+            self.spin_stage.setValue(default_stage)
+            form.addRow("Номер подиума:", self.spin_stage)
+
+            # Параметры ковралина: чекбокс и цена за м²
+            self.chk_carpet = QtWidgets.QCheckBox("Добавить ковралин")
+            self.chk_carpet.setChecked(False)
+            self.price_carpet = QtWidgets.QDoubleSpinBox()
+            self.price_carpet.setDecimals(2)
+            self.price_carpet.setRange(0.0, 1_000_000.0)
+            self.price_carpet.setValue(0.0)
+            self.price_carpet.setSuffix(" ₽/м²")
+            carpet_layout = QtWidgets.QHBoxLayout()
+            carpet_layout.addWidget(self.chk_carpet)
+            carpet_layout.addWidget(self.price_carpet)
+            form.addRow("Ковралин:", carpet_layout)
+
+            # Параметры рауса: чекбокс и цена за погонный метр
+            self.chk_raus = QtWidgets.QCheckBox("Добавить раус")
+            self.chk_raus.setChecked(False)
+            self.price_raus = QtWidgets.QDoubleSpinBox()
+            self.price_raus.setDecimals(2)
+            self.price_raus.setRange(0.0, 1_000_000.0)
+            self.price_raus.setValue(0.0)
+            self.price_raus.setSuffix(" ₽/м")
+            raus_layout = QtWidgets.QHBoxLayout()
+            raus_layout.addWidget(self.chk_raus)
+            raus_layout.addWidget(self.price_raus)
+            form.addRow("Раус:", raus_layout)
             self.spin_steps = QtWidgets.QSpinBox()
             self.spin_steps.setRange(0, 10)
             self.spin_steps.setValue(1)
@@ -3893,17 +3997,34 @@ def open_stage_master(page: Any, zone_name: str) -> None:
             layout.addWidget(btns)
             btns.accepted.connect(self.accept)
             btns.rejected.connect(self.reject)
-        def accept(self) -> None:  # type: ignore
-            w = float(self.ed_width.value())
-            d = float(self.ed_depth.value())
-            steps = int(self.spin_steps.value())
-            price_2x1 = float(self.price_2x1.value())
-            price_1x1 = float(self.price_1x1.value())
-            price_1x0_5 = float(self.price_1x0_5.value())
-            price_step = float(self.price_step.value())
-            price_leg = float(self.price_leg.value())
-            use_ship = self.chk_ship.isChecked()
-            segments_x: list[float] = []
+            def accept(self) -> None:  # type: ignore
+                # Получаем основные размеры и параметры
+                w = float(self.ed_width.value())
+                d = float(self.ed_depth.value())
+                steps = int(self.spin_steps.value())
+                price_2x1 = float(self.price_2x1.value())
+                price_1x1 = float(self.price_1x1.value())
+                price_1x0_5 = float(self.price_1x0_5.value())
+                price_step = float(self.price_step.value())
+                price_leg = float(self.price_leg.value())
+                use_ship = self.chk_ship.isChecked()
+                # Номер сцены, указанный пользователем
+                try:
+                    stage_id = int(self.spin_stage.value())
+                except Exception:
+                    stage_id = 1
+                # Сохраняем цены ковралина и рауса (если включены)
+                carpet_enabled = self.chk_carpet.isChecked()
+                try:
+                    price_carpet = float(self.price_carpet.value()) if carpet_enabled else 0.0
+                except Exception:
+                    price_carpet = 0.0
+                raus_enabled = self.chk_raus.isChecked()
+                try:
+                    price_raus = float(self.price_raus.value()) if raus_enabled else 0.0
+                except Exception:
+                    price_raus = 0.0
+                segments_x: list[float] = []
             rem_w = w
             eps = 1e-6
             while rem_w > eps:
@@ -3950,18 +4071,8 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 legs_count = (len(segments_x) + 1) * (len(segments_y) + 1) + steps * 4
             else:
                 legs_count = 4 * (count_2x1 + count_1x1 + count_1x0_5 + steps)
-            try:
-                cur = self.page.db._conn.cursor()
-                cur.execute(
-                    "SELECT name FROM items WHERE project_id=? AND COALESCE(zone,'')=? AND name LIKE 'Сценический подиум%'",
-                    (self.page.project_id, self.zone_name or ""),
-                )
-                existing = [r[0] for r in cur.fetchall()]
-            except Exception:
-                existing = []
-            stage_id = len(existing) + 1
-            import datetime
-            batch = f"stage-{datetime.datetime.utcnow().isoformat()}"
+                import datetime
+                batch = f"stage-{datetime.datetime.utcnow().isoformat()}"
             items_for_db = []
             catalog_entries = []
             def add_item(name: str, qty: float, unit_price: float) -> None:
@@ -3998,8 +4109,23 @@ def open_stage_master(page: Any, zone_name: str) -> None:
                 add_item(f"Панель подиума 1×0.5 м №{stage_id}", count_1x0_5, price_1x0_5)
             if steps > 0:
                 add_item(f"Ступенька подиума №{stage_id}", steps, price_step)
-            if legs_count > 0:
-                add_item(f"Нога подиума №{stage_id}", legs_count, price_leg)
+                if legs_count > 0:
+                    # В название ножек добавляем высоту в сантиметрах
+                    try:
+                        h_cm = int(float(self.ed_height.value()))
+                    except Exception:
+                        h_cm = int(self.ed_height.value() or 0)
+                    add_item(f"Нога подиума {h_cm} см №{stage_id}", legs_count, price_leg)
+                # Если выбран ковралин – добавляем его с количеством = площади сцены
+                if carpet_enabled:
+                    area = w * d
+                    if area > 0:
+                        add_item(f"Ковралин подиума №{stage_id}", area, price_carpet)
+                # Если выбран раус – добавляем его с количеством = периметру (2*(ширина+глубина))
+                if raus_enabled:
+                    perimeter = 2.0 * (w + d)
+                    if perimeter > 0:
+                        add_item(f"Раус подиума №{stage_id}", perimeter, price_raus)
             try:
                 if items_for_db:
                     self.page.db.add_items_bulk(items_for_db)
