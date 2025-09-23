@@ -1229,8 +1229,14 @@ def reload_zone_tabs(page: Any) -> None:
                             color = QtGui.QColor(200, 0, 0) if diff_qty > 0 else QtGui.QColor(0, 150, 0)
                 # Формируем значения строк
                 # Нормализуем регистр отображаемых полей (наименование, подрядчик, отдел, зона)
-                # Имя всегда присутствует в строке sqlite3.Row, используем значение или пустую строку
-                name_norm = normalize_case(r["name"] or "")
+                # Удаляем ведущие пробелы из наименования перед нормализацией, чтобы не допустить
+                # различий при сравнении групп по пробелам. Имя всегда присутствует в строке
+                # sqlite3.Row, используем значение или пустую строку
+                try:
+                    nm_clean = (r["name"] or "").lstrip()
+                except Exception:
+                    nm_clean = ""
+                name_norm = normalize_case(nm_clean)
                 vendor_norm = normalize_case(r["vendor"] or "")
                 department_norm = normalize_case(r["department"] or "")
                 zone_norm = normalize_case(r["zone"] or "")
@@ -1498,18 +1504,20 @@ def reload_zone_tabs(page: Any) -> None:
                     power_avg = rec["power_sum"] / qty_total
                 # Русское отображение класса
                 class_ru_show = CLASS_EN2RU.get((rec.get("type") or "equipment"), "Оборудование")
-                # Обрабатываем имя группы: убираем пробелы и приводим к нижнему регистру для проверки
+                # Обрабатываем имя группы: удаляем ведущие и конечные пробелы. Используем только strip(),
+                # чтобы сохранить внутренние пробелы нетронутыми. Это предотвращает некорректную
+                # нормализацию, когда split() удаляло все пробелы. Затем приводим к нижнему регистру
+                # для проверки.
                 try:
                     gname = rec.get("group_name", "") or ""
                 except Exception:
                     gname = ""
-                # Удаляем лишние пробелы и табуляции внутри группы: split() делит по любым пробельным символам,
-                # что устраняет неразрывные пробелы и двойные пробелы. Затем собираем через одиночный пробел.
+                # strip() убирает пробелы и табуляции по краям, lstrip() — только слева. Здесь нам
+                # достаточно убрать пробелы по краям. Если значение не строка, приводим его к строке.
                 try:
-                    gname_clean = " ".join(str(gname).split())
+                    gname_stripped = str(gname).strip()
                 except Exception:
-                    gname_clean = str(gname).strip() if gname else ""
-                gname_stripped = gname_clean
+                    gname_stripped = str(gname).strip() if gname else ""
                 try:
                     gname_lower = gname_stripped.lower()
                 except Exception:
@@ -1525,19 +1533,43 @@ def reload_zone_tabs(page: Any) -> None:
                     group_color = col
                 else:
                     group_color = QtGui.QColor(0, 0, 0, 0)
-                # Имя для отображения: убираем ведущие/конечные пробелы из наименования и
-                # добавляем название группы перед ним, если группа задана и отличается.
-                # Очищаем исходное наименование от лишних пробелов и других разделителей
+                # Имя для отображения: убираем только ведущие пробелы из наименования (оставляем
+                # внутренние пробелы нетронутыми). Также, если строка имени уже содержит
+                # префикс группы (например, "Группа: Наименование"), удаляем этот префикс,
+                # чтобы не дублировать его и корректно сравнивать. Затем при необходимости
+                # добавляем имя группы перед базовым наименованием.
                 try:
-                    base_name = " ".join(str(rec["name"]).split())
+                    base_name = str(rec["name"]).lstrip()
                 except Exception:
-                    base_name = " ".join(str(rec.get("name", "")).split())
-                display_name = base_name
+                    base_name = str(rec.get("name", "")).lstrip()
                 try:
                     name_lower = base_name.lower()
                 except Exception:
                     name_lower = ""
-                if gname_lower and gname_lower not in ("", "аренда оборудования", name_lower):
+                # Если group_name присутствует, проверяем, начинается ли имя с префикса группы
+                # Например: имя = "Сцена: Панель", group_name = "Сцена". В таком случае
+                # удаляем префикс группы и двоеточие, чтобы base_name стал просто "Панель".
+                if gname_lower:
+                    # Проверяем две возможные формы: без пробела и с пробелом перед двоеточием
+                    prefix1 = f"{gname_lower}:"
+                    prefix2 = f"{gname_lower} :"
+                    # Очищаем имя, если оно начинается с префикса группы
+                    if name_lower.startswith(prefix1) or name_lower.startswith(prefix2):
+                        # удаляем группу из начала строки
+                        try:
+                            # длина исходного префикса без учёта двоеточия
+                            pref_len = len(gname_stripped)
+                            remainder = base_name[pref_len:]
+                            # удаляем ведущие двоеточие и пробелы
+                            remainder = remainder.lstrip(" :")
+                            base_name = remainder.lstrip()
+                        except Exception:
+                            base_name = base_name
+                        name_lower = base_name.lower() if base_name else ""
+                display_name = base_name
+                # Если имя группы задано и отличается от базового имени, добавляем префикс.
+                # Пустые и служебные группы игнорируем. Сравнение в нижнем регистру.
+                if gname_lower and gname_lower not in ("", "аренда оборудования") and gname_lower != name_lower:
                     display_name = f"{normalize_case(gname_stripped)}: {display_name}"
                 # Формируем список отображаемых значений
                 vals = [
