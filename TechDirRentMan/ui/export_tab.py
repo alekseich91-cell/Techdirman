@@ -2760,7 +2760,14 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                         ])
                     # Пытаемся масштабировать ширины столбцов под доступную ширину страницы
                     try:
-                        available_width_mm = (A4[0] - 2 * 15 * mm) / mm  # type: ignore
+                        # Вычисляем ширину страницы для ландшафтной ориентации.
+                        # По умолчанию A4 представляет портретные размеры (595x842 pt). Используем
+                        # большую сторону как ширину в landscape. Затем вычитаем поля (по 15 мм).
+                        try:
+                            page_width_pts = max(A4[0], A4[1])  # ширина листа в landscape
+                        except Exception:
+                            page_width_pts = A4[0]  # fallback
+                        available_width_mm = (page_width_pts - 2 * 15 * mm) / mm  # type: ignore
                         base_widths = [60.0, 100.0, 40.0]
                         total_base = sum(base_widths) or 1.0
                         scale = available_width_mm / total_base
@@ -2801,7 +2808,11 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                         ])
                     # Масштабируем ширины столбцов для таблицы расходов по аналогии с доходами
                     try:
-                        available_width_mm = (A4[0] - 2 * 15 * mm) / mm  # type: ignore
+                        try:
+                            page_width_pts = max(A4[0], A4[1])  # ширина листа в landscape
+                        except Exception:
+                            page_width_pts = A4[0]
+                        available_width_mm = (page_width_pts - 2 * 15 * mm) / mm  # type: ignore
                         base_widths_exp = [70.0, 30.0, 30.0, 40.0]
                         total_base_exp = sum(base_widths_exp) or 1.0
                         scale_exp = available_width_mm / total_base_exp
