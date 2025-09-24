@@ -921,14 +921,16 @@ class FinanceTab(QtWidgets.QWidget):
         left.addWidget(grp_our, 1)
         vbox_our = QtWidgets.QVBoxLayout(grp_our)
 
-        # Добавляем столбец для суммы скидки (для справки)
-        self.tbl_our_discount = QtWidgets.QTableWidget(0, 5, grp_our)
+        # Таблица «Наша скидка…» теперь имеет 6 колонок: последняя отображает,
+        # сколько нам остаётся после учёта клиентской скидки и комиссии
+        self.tbl_our_discount = QtWidgets.QTableWidget(0, 6, grp_our)
         self.tbl_our_discount.setHorizontalHeaderLabels([
             "Подрядчик",
             "Наша скидка %",
             "Наша скидка ₽",
             "Клиентская скидка % (для справки)",
             "Сумма скидки ₽",
+            "Сколько остаётся ₽",
         ])
         self.tbl_our_discount.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.tbl_our_discount.verticalHeader().setVisible(False)
@@ -1362,6 +1364,32 @@ class FinanceTab(QtWidgets.QWidget):
             item_sum.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             item_sum.setFlags(item_sum.flags() ^ QtCore.Qt.ItemIsEditable)
             self.tbl_our_discount.setItem(row, 4, item_sum)
+
+            # 5 Сколько остаётся ₽ (readonly). Рассчитываем как нашу скидку минус
+            # клиентскую скидку и комиссию. Для вычисления используем функцию
+            # compute_internal_discount() и предварительные значения.
+            try:
+                # Абсолютная скидка, предоставленная клиенту
+                client_discount_amount = float(equip_sum) * (float(client_pct) / 100.0)
+                # Комиссия берётся из предпросмотра или настроек подрядчика
+                commission_pct = self.preview_commission_pct.get(vendor, s.commission_pct)
+                # Комиссия рассчитывается на сумму после клиентской скидки
+                commission_amount = (float(equip_sum) - client_discount_amount) * (float(commission_pct) / 100.0)
+                # Величина нашей внутренней скидки (то, что нам остаётся)
+                internal_remain = compute_internal_discount(
+                    float(equip_sum),
+                    client_discount_amount,
+                    commission_amount,
+                    float(our_pct) if our_pct is not None else None,
+                    float(our_sum) if our_sum is not None else None,
+                )
+            except Exception:
+                logger.error("Ошибка расчёта внутренней скидки для '%s': %s", vendor, traceback.format_exc())
+                internal_remain = 0.0
+            item_rem = QtWidgets.QTableWidgetItem(f"{round2(internal_remain):,.2f}".replace(",", " "))
+            item_rem.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            item_rem.setFlags(item_rem.flags() ^ QtCore.Qt.ItemIsEditable)
+            self.tbl_our_discount.setItem(row, 5, item_rem)
 
         self.tbl_our_discount.blockSignals(False)
 
