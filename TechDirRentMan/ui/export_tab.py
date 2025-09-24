@@ -116,6 +116,20 @@ DEFAULT_LOGO_PATH = os.path.join(FONTS_DIR, "default_logo.png")  # если ну
 # максимально растянуть таблицы, но сохранить отступы.
 FIN_TABLE_WIDTH_MM = 240.0
 
+# Палитра цветов для групп (ReportLab). Используется для отображения групп
+# в сметном отчёте при активации опции «отображать группировки». Цвета
+# подобраны в соответствии с палитрой из summary_tab, но конвертированы
+# в формат reportlab (RGB от 0 до 1).
+GROUP_COLORS_RL = [
+    colors.Color(255/255.0, 102/255.0, 102/255.0),   # светло‑красный
+    colors.Color(255/255.0, 153/255.0, 102/255.0),   # персиковый
+    colors.Color(204/255.0, 255/255.0, 102/255.0),   # салатовый
+    colors.Color(102/255.0, 255/255.0, 178/255.0),   # бирюзовый
+    colors.Color(102/255.0, 178/255.0, 255/255.0),   # голубой
+    colors.Color(178/255.0, 102/255.0, 255/255.0),   # сиреневый
+    colors.Color(255/255.0, 102/255.0, 178/255.0),   # розовый
+]
+
 
 def _register_fonts() -> None:
     """Регистрирует русские шрифты из папки ``fonts`` для использования в PDF.
@@ -253,6 +267,9 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     frame_header_img = _DragDropFrame("Перетащите изображение для шапки")
     chk_zones_img = QtWidgets.QCheckBox("Прикрепить картинки к зонам")
     frame_zones_img = _DragDropFrame("Перетащите изображения для зон")
+
+    # Новый флажок: отображать группировки (цветные группы как в сводной смете)
+    chk_smeta_show_groups = QtWidgets.QCheckBox("Отображать группировки")
     # Опция: выводить смету только для выбранного подрядчика
     chk_smeta_vendor_only = QtWidgets.QCheckBox("Вывод по конкретному подрядчику")
     # Список подрядчиков для фильтрации сметы. Заполняется при создании вкладки.
@@ -337,6 +354,7 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
         chk_smeta_with_tax,
         chk_sort_dept,
         chk_sort_zones,
+        chk_smeta_show_groups,
         chk_header_img,
         frame_header_img,
         chk_zones_img,
@@ -675,6 +693,10 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                 # выводятся все подрядчики проекта.  Значение выбранного
                 # подрядчика передаётся отдельным полем ``vendor``.
                 "vendor_only": chk_smeta_vendor_only.isChecked(),
+                # Флаг отображения группировок: если True, позиции в смете окрашиваются
+                # в цвета групп, аналогично сводной смете. Значение читается из
+                # чекбокса chk_smeta_show_groups.
+                "show_groups": chk_smeta_show_groups.isChecked() if 'chk_smeta_show_groups' in locals() else False,
                 # Имя выбранного подрядчика (строка). Используется только если
                 # ``vendor_only`` == True. Если поле пустое или None,
                 # фильтрация по подрядчику не применяется.
@@ -1332,6 +1354,56 @@ def _build_smeta_report(page: Any, smeta_opts: Dict[str, Any], header_style: Par
     """
     elements: List[Any] = []
     try:
+        # Подготовка для отображения групп в смете. Если включён флаг
+        # ``show_groups`` в опциях, строки отчёта будут окрашены в
+        # соответствующий цвет группы. Для сопоставления названий групп
+        # с цветами используется палитра GROUP_COLORS_RL. Словарь
+        # ``_group_color_map`` хранит уже назначенные цвета, чтобы
+        # одинаковые группы получали одинаковый цвет. Переменная
+        # ``_group_color_index`` используется для перебора цветов
+        # палитры.  Функция ``_get_rl_group_color`` возвращает цвет
+        # ReportLab для заданной группы или None, если группу не
+        # следует окрашивать (например, пустое название или
+        # специальное значение 'аренда оборудования').
+        show_groups: bool = bool(smeta_opts.get("show_groups"))
+        _group_color_map: Dict[str, Any] = {}
+        _group_color_index = [0]  # счётчик индекса цвета
+
+        def _get_rl_group_color(gname: str) -> Optional[Any]:
+            """Возвращает объект цвета reportlab для указанной группы.
+
+            Цвет выбирается циклически из палитры GROUP_COLORS_RL и
+            сохраняется в локальном словаре. Пустые или служебные
+            группы (аренда оборудования) возвращают None, чтобы не
+            окрашивать строки. Используется normalize_case для
+            регистронезависимого сравнения.
+
+            :param gname: исходное имя группы
+            :return: объект цвета или None
+            """
+            try:
+                gkey = normalize_case(gname or "")
+            except Exception:
+                gkey = gname or ""
+            try:
+                gkey_lower = str(gkey).strip().lower()
+            except Exception:
+                gkey_lower = str(gkey).lower() if gkey else ""
+            # Не окрашиваем пустые и предопределённые группы
+            if not gkey_lower or gkey_lower == normalize_case("аренда оборудования").strip().lower():
+                return None
+            # Если цвет уже назначен, возвращаем его
+            if gkey in _group_color_map:
+                return _group_color_map[gkey]
+            # Назначаем новый цвет из палитры
+            try:
+                idx = _group_color_index[0] % len(GROUP_COLORS_RL)
+                col = GROUP_COLORS_RL[idx]
+                _group_color_map[gkey] = col
+                _group_color_index[0] += 1
+                return col
+            except Exception:
+                return None
         # Имя для зоны без названия (по умолчанию "Без зоны"). Используется при выводе группировки.
         no_zone_label = smeta_opts.get("no_zone_label", "").strip() or "Без зоны"
         # 1. Заголовочная информация (шапка проекта)
@@ -1649,6 +1721,27 @@ def _build_smeta_report(page: Any, smeta_opts: Dict[str, Any], header_style: Par
                         ("FONTNAME", (0, 1), (-1, -1), "DejaVuSans"),
                         ("FONTSIZE", (0, 1), (-1, -1), 9),
                     ])
+                    # Если включено отображение групп, окрашиваем строки
+                    if show_groups:
+                        for row_idx, item in enumerate(dept_items, start=1):
+                            try:
+                                # Определяем имя группы для позиции
+                                gname = getattr(item, "group_name", "") or ""
+                                if not gname or not str(gname).strip():
+                                    # Если group_name пустой, пытаемся извлечь префикс до двоеточия
+                                    raw_name = getattr(item, "name", "") or ""
+                                    # Приводим неразрывные и узкие пробелы к обычному для корректного деления
+                                    try:
+                                        raw = str(raw_name).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
+                                    except Exception:
+                                        raw = str(raw_name)
+                                    if ":" in raw:
+                                        gname = raw.split(":", 1)[0].strip()
+                                colr = _get_rl_group_color(str(gname))
+                                if colr:
+                                    table_style.add("BACKGROUND", (0, row_idx), (-1, row_idx), colr)
+                            except Exception:
+                                continue
                     # Подсветка изменённых строк
                     if changed_map:
                         for idx, it in enumerate(dept_items, start=1):
@@ -1700,6 +1793,24 @@ def _build_smeta_report(page: Any, smeta_opts: Dict[str, Any], header_style: Par
                         ("FONTNAME", (0, 1), (-1, -1), "DejaVuSans"),
                         ("FONTSIZE", (0, 1), (-1, -1), 9),
                     ])
+                    # Окраска строк по группам, если включена опция
+                    if show_groups:
+                        for row_idx, item in enumerate(z_items, start=1):
+                            try:
+                                gname = getattr(item, "group_name", "") or ""
+                                if not gname or not str(gname).strip():
+                                    raw_name = getattr(item, "name", "") or ""
+                                    try:
+                                        raw = str(raw_name).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
+                                    except Exception:
+                                        raw = str(raw_name)
+                                    if ":" in raw:
+                                        gname = raw.split(":", 1)[0].strip()
+                                colr = _get_rl_group_color(str(gname))
+                                if colr:
+                                    table_style.add("BACKGROUND", (0, row_idx), (-1, row_idx), colr)
+                            except Exception:
+                                continue
                     if changed_map:
                         for idx, it in enumerate(z_items, start=1):
                             try:
@@ -1784,6 +1895,25 @@ def _build_smeta_report(page: Any, smeta_opts: Dict[str, Any], header_style: Par
                 ("FONTNAME", (0, 1), (-1, -1), "DejaVuSans"),
                 ("FONTSIZE", (0, 1), (-1, -1), 9),
             ])
+            # Окраска строк по группам, если активирована опция. Работает только при
+            # отсутствии сортировки, когда выводится одна общая таблица.
+            if show_groups:
+                for row_idx, item in enumerate(items, start=1):
+                    try:
+                        gname = getattr(item, "group_name", "") or ""
+                        if not gname or not str(gname).strip():
+                            raw_name = getattr(item, "name", "") or ""
+                            try:
+                                raw = str(raw_name).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
+                            except Exception:
+                                raw = str(raw_name)
+                            if ":" in raw:
+                                gname = raw.split(":", 1)[0].strip()
+                        colr = _get_rl_group_color(str(gname))
+                        if colr:
+                            table_style.add("BACKGROUND", (0, row_idx), (-1, row_idx), colr)
+                    except Exception:
+                        continue
             if changed_map:
                 for idx, it in enumerate(items, start=1):
                     try:
@@ -2628,16 +2758,19 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             dsc,
                             f"{amt:,.2f}".replace(",", " ")
                         ])
-                    # Колонки: подрядчик (60 мм), описание (100 мм), сумма (40 мм)
+                    # Пытаемся масштабировать ширины столбцов под доступную ширину страницы
                     try:
+                        available_width_mm = (A4[0] - 2 * 15 * mm) / mm  # type: ignore
+                        base_widths = [60.0, 100.0, 40.0]
+                        total_base = sum(base_widths) or 1.0
+                        scale = available_width_mm / total_base
+                        col_widths_mm = [w * scale for w in base_widths]
+                        inc_table = Table(inc_data, repeatRows=1, colWidths=[w * mm for w in col_widths_mm])
+                    except Exception:
                         inc_table = Table(inc_data, repeatRows=1, colWidths=[60 * mm, 100 * mm, 40 * mm])
-                        # Применяем стиль для единообразия шрифта и выравнивания
-                        # Используем локальный псевдоним для TableStyle, чтобы не скрывать
-                        # глобальную переменную TableStyle выше в функции. В противном
-                        # случае Python пометит TableStyle как локальную переменную и
-                        # обращение к ней выше вызовет UnboundLocalError. См. логи
-                        # ошибок финансового отчёта.
-                        from reportlab.platypus import TableStyle as LocalTableStyle
+                    # Применяем стиль для единообразия шрифта и выравнивания
+                    from reportlab.platypus import TableStyle as LocalTableStyle  # type: ignore
+                    try:
                         inc_table.setStyle(LocalTableStyle([
                             ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
                             ('FONTSIZE', (0, 0), (-1, -1), 10),
@@ -2645,6 +2778,9 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
                             ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                            # Убираем внутренние отступы таблицы, чтобы она занимала всю доступную ширину
+                            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
                         ]))
                         elements.append(inc_table)
                     except Exception:
@@ -2663,10 +2799,19 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             f"{price:,.2f}".replace(",", " "),
                             f"{tot:,.2f}".replace(",", " ")
                         ])
+                    # Масштабируем ширины столбцов для таблицы расходов по аналогии с доходами
                     try:
+                        available_width_mm = (A4[0] - 2 * 15 * mm) / mm  # type: ignore
+                        base_widths_exp = [70.0, 30.0, 30.0, 40.0]
+                        total_base_exp = sum(base_widths_exp) or 1.0
+                        scale_exp = available_width_mm / total_base_exp
+                        col_widths_exp_mm = [w * scale_exp for w in base_widths_exp]
+                        exp_table = Table(exp_data, repeatRows=1, colWidths=[w * mm for w in col_widths_exp_mm])
+                    except Exception:
                         exp_table = Table(exp_data, repeatRows=1, colWidths=[70 * mm, 30 * mm, 30 * mm, 40 * mm])
-                        # Используем локальный псевдоним для TableStyle, аналогично
-                        from reportlab.platypus import TableStyle as LocalTableStyle
+                    # Стилизация таблицы
+                    from reportlab.platypus import TableStyle as LocalTableStyle  # type: ignore
+                    try:
                         exp_table.setStyle(LocalTableStyle([
                             ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
                             ('FONTSIZE', (0, 0), (-1, -1), 10),
@@ -2674,6 +2819,8 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
                             ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
                         ]))
                         elements.append(exp_table)
                     except Exception:
