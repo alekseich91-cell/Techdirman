@@ -61,6 +61,7 @@ from typing import List, Dict, Any, Tuple, Set, Optional
 from datetime import datetime
 
 from PySide6 import QtWidgets, QtCore, QtGui
+import unicodedata
 
 from .common import (
     CLASS_RU2EN, CLASS_EN2RU, WRAP_THRESHOLD, fmt_num, fmt_sign, to_float,
@@ -767,6 +768,16 @@ def build_zone_table(page: Any) -> QtWidgets.QTableWidget:
     t.setWordWrap(False)
     # Для наименований используем делегат переноса
     t.setItemDelegateForColumn(0, WrapTextDelegate(t, wrap_threshold=WRAP_THRESHOLD))
+    # Устанавливаем моноширинный шрифт для таблицы, чтобы префиксы групп
+    # отображались с одинаковым шагом. Это помогает устранить визуальные
+    # различия в отступах из‑за разных ширин букв.
+    try:
+        font = t.font()
+        # hint для моноширинного шрифта
+        font.setStyleHint(QtGui.QFont.TypeWriter)
+        t.setFont(font)
+    except Exception:
+        pass
     t.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
     setup_priority_name(t, name_col=0)
     return t
@@ -1519,9 +1530,16 @@ def reload_zone_tabs(page: Any) -> None:
                     gname_raw = rec.get("group_name", "") or ""
                 except Exception:
                     gname_raw = ""
-                # Нормализуем пробелы в group_name
+                # Нормализуем пробелы в group_name и удаляем форматные символы (категория Cf).
                 if isinstance(gname_raw, str):
-                    gname_raw = "".join(" " if ch.isspace() else ch for ch in gname_raw)
+                    filtered_chars = []
+                    for ch in gname_raw:
+                        # Пропускаем невидимые форматные символы (например, U+2060)
+                        if unicodedata.category(ch) == "Cf":
+                            continue
+                        # Любой пробельный символ заменяем на обычный пробел
+                        filtered_chars.append(" " if ch.isspace() else ch)
+                    gname_raw = "".join(filtered_chars)
                 # Нормализуем пробелы в имени и извлекаем префикс до двоеточия (если есть)
                 prefix_candidate = ""
                 try:
@@ -1529,9 +1547,22 @@ def reload_zone_tabs(page: Any) -> None:
                 except Exception:
                     nm_val = ""
                 if isinstance(nm_val, str):
-                    nm_clean = "".join(" " if ch.isspace() else ch for ch in nm_val)
-                    if ":" in nm_clean:
-                        prefix_candidate = nm_clean.split(":", 1)[0].strip()
+                    # Нормализуем пробелы и удаляем форматные символы
+                    filtered_nm_chars: list[str] = []
+                    for ch in nm_val:
+                        # Удаляем невидимые форматные символы (категория Cf)
+                        if unicodedata.category(ch) == "Cf":
+                            continue
+                        filtered_nm_chars.append(" " if ch.isspace() else ch)
+                    nm_clean = "".join(filtered_nm_chars)
+                    # Приводим различные варианты двоеточия к обычному ':'
+                    nm_clean_colon = (nm_clean
+                                      .replace("\uFF1A", ":")  # полноширинное двоеточие
+                                      .replace("\uFE55", ":")  # маленькое двоеточие
+                                      .replace("\uA789", ":")  # модифицированный знак
+                                     )
+                    if ":" in nm_clean_colon:
+                        prefix_candidate = nm_clean_colon.split(":", 1)[0].strip()
                 # Выбираем окончательное имя группы. Если поле group_name пустое
                 # или служебное, используем префикс из имени. В противном случае
                 # используем указанное имя группы. Для надёжного сравнения и

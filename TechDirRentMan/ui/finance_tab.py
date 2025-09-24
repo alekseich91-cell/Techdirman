@@ -1887,25 +1887,33 @@ class FinanceTab(QtWidgets.QWidget):
             self.resize(1000, 600)
             layout = QtWidgets.QVBoxLayout(self)
 
-            # 1. Формируем данные для модели: (vendor, class_ru, name, qty_available, unit_price)
-            data_rows: List[Tuple[str, str, str, float, float]] = []
+            # 1. Формируем данные для модели: (vendor, class_ru, name, qty_available, unit_price, eff)
+            #    В список добавляем также коэффициент `eff` (фактический коэффициент,
+            #    с которым считается цена позиции). Значение `eff` показывает,
+            #    как была получена цена за единицу (price * eff). Это поле не
+            #    отображается в основной таблице, но используется в диалоге
+            #    выбора количества для отображения столбца «Коэффициент».
+            data_rows: List[Tuple[str, str, str, float, float, float]] = []
             unique_vendors: set[str] = set()
             unique_classes: set[str] = set()
             for it in items:
-                # Эффективный коэффициент для расчёта цены за единицу:
-                # Если предусмотрено состояние активного глобального коэффициента, используем
-                # его только если для подрядчика он включён. Иначе цена = price * 1.
-                eff = 1.0
+                # Рассчитываем коэффициент подрядчика (vendor_eff) для цены. При предпросмотре
+                # он учитывается только если включён, иначе берём коэффициент 1.0.
+                vendor_eff = 1.0
                 if it.cls == "equipment" and it.vendor in preview_vendor_coeffs:
                     if preview_coeff_enabled is not None:
+                        # Коэффициент vendor_eff активен только если флажок включён
                         if preview_coeff_enabled.get(it.vendor, False):
-                            eff = preview_vendor_coeffs[it.vendor]
+                            vendor_eff = preview_vendor_coeffs[it.vendor]
                     else:
-                        eff = preview_vendor_coeffs[it.vendor]
+                        vendor_eff = preview_vendor_coeffs[it.vendor]
                 cls_ru = CLASS_EN2RU.get(it.cls, it.cls)
-                unit_amount = float(it.price) * float(eff)
+                # Цена за единицу зависит только от коэффициента подрядчика
+                unit_amount = float(it.price) * float(vendor_eff)
                 qty_avail = float(it.qty)
-                data_rows.append((it.vendor, cls_ru, it.name, qty_avail, unit_amount))
+                # Используем коэффициент позиции (it.coeff) как ограничение для редактируемого поля
+                eff_val = float(it.coeff)
+                data_rows.append((it.vendor, cls_ru, it.name, qty_avail, unit_amount, eff_val))
                 unique_vendors.add(it.vendor)
                 unique_classes.add(cls_ru)
 
@@ -1923,18 +1931,21 @@ class FinanceTab(QtWidgets.QWidget):
                 выбирается в отдельном диалоге при подтверждении выбора.
                 """
                 headers = ["Подрядчик", "Класс", "Наименование", "Доступно", "Цена ₽"]
-                def __init__(self, rows: List[Tuple[str, str, str, float, float]], parent=None) -> None:
+                def __init__(self, rows: List[Tuple[str, str, str, float, float, float]], parent=None) -> None:
                     super().__init__(parent)
+                    # Каждая строка: (vendor, class_ru, name, qty_available, unit_price, eff)
                     self._rows = rows
                 def rowCount(self, parent=QtCore.QModelIndex()) -> int:
                     return len(self._rows)
                 def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+                    # Отображаем только пять колонок: подрядчик, класс, наименование, доступно, цена
                     return 5
                 def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole):
                     if not index.isValid():
                         return None
                     r, c = index.row(), index.column()
-                    vendor, cls_ru, name, qty_avail, unit_price = self._rows[r]
+                    # Распаковываем все поля; коэффициент eff (6‑е значение) в данном методе не нужен
+                    vendor, cls_ru, name, qty_avail, unit_price, _eff = self._rows[r]
                     if role == QtCore.Qt.DisplayRole:
                         if c == 0:
                             return vendor
@@ -1964,10 +1975,16 @@ class FinanceTab(QtWidgets.QWidget):
                         return self._rows[row][3]
                     return 0.0
                 def get_unit_price(self, row: int) -> float:
-                    """Возвращает цену за единицу для выбранной строки."""
+                    """Возвращает цену за единицу для выбранной строки (с учётом коэффициента)."""
                     if 0 <= row < len(self._rows):
                         return self._rows[row][4]
                     return 0.0
+
+                def get_eff(self, row: int) -> float:
+                    """Возвращает коэффициент, с которым рассчитана цена за единицу."""
+                    if 0 <= row < len(self._rows):
+                        return self._rows[row][5]
+                    return 1.0
                 def get_vendor_name(self, row: int) -> Tuple[str, str]:
                     """Возвращает (vendor, name) для выбранной строки."""
                     if 0 <= row < len(self._rows):
@@ -2071,35 +2088,52 @@ class FinanceTab(QtWidgets.QWidget):
                 dlg = QtWidgets.QDialog(self)
                 dlg.setWindowTitle("Количество позиций для дохода")
                 dlg_layout = QtWidgets.QVBoxLayout(dlg)
-                # Таблица с позициями, количеством, скидкой и суммой
-                # Добавляем колонку «Срезаем ₽» для указания абсолютной скидки, и колонку «Сумма ₽» для показа итога
-                table = QtWidgets.QTableWidget(len(selected_source_rows), 7, dlg)
+                # Таблица с позициями, количеством, коэффициентом, скидкой и суммой
+                # Колонки: подрядчик, наименование, доступно, кол-во, цена, коэффициент, срезаем, сумма
+                table = QtWidgets.QTableWidget(len(selected_source_rows), 8, dlg)
                 table.setHorizontalHeaderLabels([
-                    "Подрядчик", "Наименование", "Доступно", "Кол-во", "Цена ₽", "Срезаем ₽", "Сумма ₽"])
+                    "Подрядчик", "Наименование", "Доступно", "Кол-во", "Цена ₽", "Коэфф.", "Срезаем ₽", "Сумма ₽"])  # type: ignore[list-item]
 
                 # Словари для хранения текущих значений количества и скидки
                 current_qty: Dict[int, int] = {}
                 current_cut: Dict[int, float] = {}
-                # Словарь для хранения текущих сумм по строкам
+                # Текущие коэффициенты по каждой строке (позволяют
+                # пользователю уменьшать коэффициент позиции, но не
+                # увеличивать его выше исходного. Цена за единицу не
+                # изменяется при изменении коэффициента; коэффициент
+                # применяется лишь при расчёте дохода.)
+                current_coeff: Dict[int, float] = {}
+                # Сохраняем исходные цены за единицу для каждой строки (цены
+                # не меняются при изменении коэффициента)
+                base_prices: Dict[int, float] = {}
+                # Суммы по каждой строке
                 current_amounts: Dict[int, float] = {}
                 # Метка для отображения общей суммы всех выбранных позиций
                 sum_label = QtWidgets.QLabel()
 
                 # Вспомогательная функция пересчёта суммы по строке и общего итога
-                def recalc_row_total(r: int, price: float) -> None:
+                def recalc_row_total(r: int) -> None:
                     """Пересчитывает итог для строки r на основе текущего количества и скидки.
 
-                    Величина скидки указывается как абсолютное значение на единицу,
-                    поэтому итог для строки рассчитывается как qty * cut_per_unit.
+                    Правила расчёта:
+                        - если скидка указана (>0), берём эту скидку как цену за единицу;
+                        - если скидка = 0, берём исходную цену позиции;
+                        - далее цена за единицу умножается на коэффициент
+                          (который пользователь может уменьшить).
                     """
                     try:
                         qty_val = current_qty.get(r, 0)
                         cut_val = current_cut.get(r, 0.0)
-                        # Итог дохода: скидка за единицу умножается на количество
-                        new_amount = float(qty_val) * float(cut_val)
+                        # Исходная цена за единицу (не зависит от коэффициента)
+                        base_price_val = base_prices.get(r, 0.0)
+                        coeff_val = current_coeff.get(r, 0.0)
+                        # Выбираем цену за единицу: скидку или полную цену
+                        price_component = float(cut_val) if cut_val > 0.0 else base_price_val
+                        per_unit_amount = coeff_val * price_component
+                        new_amount = float(qty_val) * per_unit_amount
                         current_amounts[r] = new_amount
                         # Обновляем отображение суммы в таблице
-                        item = table.item(r, 6)
+                        item = table.item(r, 7)
                         if item is not None:
                             disp = f"{new_amount:.2f}".replace(".", ",").rstrip("0").rstrip(",")
                             item.setText(disp)
@@ -2114,6 +2148,7 @@ class FinanceTab(QtWidgets.QWidget):
                     vendor, name = self.model.get_vendor_name(src_row)
                     qty_avail = self.model.get_available(src_row)
                     unit_price = self.model.get_unit_price(src_row)
+                    eff_val = self.model.get_eff(src_row)
                     # Подрядчик
                     item0 = QtWidgets.QTableWidgetItem(vendor)
                     item0.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
@@ -2141,6 +2176,20 @@ class FinanceTab(QtWidgets.QWidget):
                     item4 = QtWidgets.QTableWidgetItem(disp_price)
                     item4.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
                     table.setItem(row_idx, 4, item4)
+                    # Сохраняем исходную цену без учёта коэффициента (цена за единицу)
+                    base_prices[row_idx] = unit_price
+                    # Коэффициент – редактируемый DoubleSpinBox с ограничением сверху исходного coeff
+                    spin_coeff = QtWidgets.QDoubleSpinBox()
+                    spin_coeff.setMinimum(0.0)
+                    spin_coeff.setMaximum(eff_val)
+                    spin_coeff.setDecimals(2)
+                    spin_coeff.setSingleStep(0.1)
+                    spin_coeff.setValue(eff_val)
+                    spin_coeff.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+                    spin_coeff.setKeyboardTracking(False)
+                    table.setCellWidget(row_idx, 5, spin_coeff)
+                    # Сохраняем текущий коэффициент
+                    current_coeff[row_idx] = eff_val
                     # Срезаем с цены – DoubleSpinBox для ввода абсолютной скидки
                     spin_cut = QtWidgets.QDoubleSpinBox()
                     spin_cut.setMinimum(0.0)
@@ -2152,27 +2201,37 @@ class FinanceTab(QtWidgets.QWidget):
                     # Убираем стрелки для чистоты интерфейса
                     spin_cut.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
                     spin_cut.setKeyboardTracking(False)
-                    table.setCellWidget(row_idx, 5, spin_cut)
+                    table.setCellWidget(row_idx, 6, spin_cut)
                     current_cut[row_idx] = 0.0
-                    # Итоговая сумма для текущей строки (qty * cut_per_unit): изначально 0
+                    # Итоговая сумма для текущей строки: изначально 0
                     current_amounts[row_idx] = 0.0
                     disp_amount = f"0".replace(".", ",")
-                    item6 = QtWidgets.QTableWidgetItem(disp_amount)
-                    item6.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
-                    table.setItem(row_idx, 6, item6)
+                    item7 = QtWidgets.QTableWidgetItem(disp_amount)
+                    item7.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+                    table.setItem(row_idx, 7, item7)
 
                     # Обработчики изменений количества и скидки
-                    def on_qty_changed(val: int, r=row_idx, price=unit_price) -> None:
+                    def on_qty_changed(val: int, r=row_idx) -> None:
                         # При изменении количества обновляем текущий qty и пересчитываем строку
                         current_qty[r] = val
-                        recalc_row_total(r, price)
+                        recalc_row_total(r)
                     spin_qty.valueChanged.connect(on_qty_changed)
 
-                    def on_cut_changed(val: float, r=row_idx, price=unit_price) -> None:
+                    def on_cut_changed(val: float, r=row_idx) -> None:
                         # При изменении скидки обновляем текущую скидку и пересчитываем строку
                         current_cut[r] = float(val)
-                        recalc_row_total(r, price)
+                        recalc_row_total(r)
                     spin_cut.valueChanged.connect(on_cut_changed)
+
+                    def on_coeff_changed(val: float, r=row_idx) -> None:
+                        # При изменении коэффициента обновляем сохранённый коэффициент и пересчитываем строку
+                        try:
+                            new_coeff = float(val)
+                            current_coeff[r] = new_coeff
+                            recalc_row_total(r)
+                        except Exception:
+                            logger.error("Ошибка изменения коэффициента", exc_info=True)
+                    spin_coeff.valueChanged.connect(on_coeff_changed)
 
                 # Автоматическое растягивание колонок
                 table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
@@ -2191,10 +2250,16 @@ class FinanceTab(QtWidgets.QWidget):
                     for row_idx, src_row in enumerate(selected_source_rows):
                         qty = current_qty.get(row_idx, 0)
                         cut_per_unit = current_cut.get(row_idx, 0.0)
-                        if qty > 0 and cut_per_unit > 0.0:
+                        if qty > 0:
                             vendor, name = self.model.get_vendor_name(src_row)
-                            # Итоговая сумма дохода = qty * cut_per_unit
-                            amount = float(qty) * float(cut_per_unit)
+                            # Получаем исходную цену за единицу для строки
+                            base_price_val = base_prices.get(row_idx, self.model.get_unit_price(src_row))
+                            # Получаем выбранный коэффициент для строки
+                            coeff_val = current_coeff.get(row_idx, 0.0)
+                            # Выбираем цену за единицу: скидку или полную цену
+                            price_component = cut_per_unit if cut_per_unit > 0.0 else base_price_val
+                            per_unit = coeff_val * price_component
+                            amount = float(qty) * float(per_unit)
                             res.append((vendor, name, amount))
                 return res
             except Exception:
