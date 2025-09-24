@@ -1508,16 +1508,47 @@ def reload_zone_tabs(page: Any) -> None:
                 # чтобы сохранить внутренние пробелы нетронутыми. Это предотвращает некорректную
                 # нормализацию, когда split() удаляло все пробелы. Затем приводим к нижнему регистру
                 # для проверки.
+                # ---------------------------------------------------------------------------
+                # --- Группа: определяем имя группы, нормализуем пробелы и извлекаем префикс
+                # Начальное имя группы из записи. Если поле group_name отсутствует
+                # (или указано как "Аренда оборудования"), то в качестве группы
+                # используем префикс имени до двоеточия. Это гарантирует, что все
+                # строки вида «Экран1: ...» попадут в одну группу независимо от
+                # того, было ли заполнено поле group_name.
                 try:
-                    gname = rec.get("group_name", "") or ""
+                    gname_raw = rec.get("group_name", "") or ""
                 except Exception:
-                    gname = ""
-                # strip() убирает пробелы и табуляции по краям, lstrip() — только слева. Здесь нам
-                # достаточно убрать пробелы по краям. Если значение не строка, приводим его к строке.
+                    gname_raw = ""
+                # Нормализуем пробелы в group_name
+                if isinstance(gname_raw, str):
+                    gname_raw = "".join(" " if ch.isspace() else ch for ch in gname_raw)
+                # Нормализуем пробелы в имени и извлекаем префикс до двоеточия (если есть)
+                prefix_candidate = ""
                 try:
-                    gname_stripped = str(gname).strip()
+                    nm_val = rec.get("name", "") or ""
                 except Exception:
-                    gname_stripped = str(gname).strip() if gname else ""
+                    nm_val = ""
+                if isinstance(nm_val, str):
+                    nm_clean = "".join(" " if ch.isspace() else ch for ch in nm_val)
+                    if ":" in nm_clean:
+                        prefix_candidate = nm_clean.split(":", 1)[0].strip()
+                # Выбираем окончательное имя группы. Если поле group_name пустое
+                # или служебное, используем префикс из имени. В противном случае
+                # используем указанное имя группы. Для надёжного сравнения и
+                # устранения различий в пробелах и регистре применяем normalize_case.
+                try:
+                    gname_norm = normalize_case(gname_raw)
+                except Exception:
+                    gname_norm = ""
+                try:
+                    prefix_norm = normalize_case(prefix_candidate)
+                except Exception:
+                    prefix_norm = prefix_candidate or ""
+                # Если group_name не задан или равен "аренда оборудования", используем префикс.
+                if not gname_norm or gname_norm.lower() == "аренда оборудования":
+                    gname_stripped = prefix_norm
+                else:
+                    gname_stripped = gname_norm
                 try:
                     gname_lower = gname_stripped.lower()
                 except Exception:
@@ -1538,10 +1569,21 @@ def reload_zone_tabs(page: Any) -> None:
                 # префикс группы (например, "Группа: Наименование"), удаляем этот префикс,
                 # чтобы не дублировать его и корректно сравнивать. Затем при необходимости
                 # добавляем имя группы перед базовым наименованием.
+                # Получаем базовое имя. Для корректного отображения заменяем
+                # специальные пробелы (неразрывные и узкие) на обычные и затем
+                # удаляем только ведущие пробелы. Это устраняет различия в
+                # отступах между строками с визуально одинаковыми пробелами.
                 try:
-                    base_name = str(rec["name"]).lstrip()
+                    raw_name = rec["name"]
                 except Exception:
-                    base_name = str(rec.get("name", "")).lstrip()
+                    raw_name = rec.get("name", "")
+                try:
+                    if isinstance(raw_name, str):
+                        # Заменяем любой пробельный символ на обычный пробел
+                        raw_name = "".join(" " if ch.isspace() else ch for ch in raw_name)
+                    base_name = str(raw_name).lstrip()
+                except Exception:
+                    base_name = str(raw_name).lstrip() if raw_name else ""
                 try:
                     name_lower = base_name.lower()
                 except Exception:
@@ -1560,6 +1602,8 @@ def reload_zone_tabs(page: Any) -> None:
                             # длина исходного префикса без учёта двоеточия
                             pref_len = len(gname_stripped)
                             remainder = base_name[pref_len:]
+                            # Нормализуем пробелы: заменяем любой пробельный символ на обычный пробел
+                            remainder = "".join(" " if ch.isspace() else ch for ch in remainder)
                             # удаляем ведущие двоеточие и пробелы
                             remainder = remainder.lstrip(" :")
                             base_name = remainder.lstrip()
