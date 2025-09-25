@@ -110,42 +110,13 @@ GROUP_COLOR_PALETTE: List[QtGui.QColor] = [
 ]
 
 def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
-    """Возвращает цвет для указанной группы.
+    """(Deprecated) This function is retained for backward compatibility.
 
-    Цвет выбирается из глобальной палитры и сохраняется в атрибуте
-    ``page._group_colors``. Пустое имя группы или служебное значение
-    ('аренда оборудования') возвращает прозрачный цвет, чтобы не
-    окрашивать такие строки. При исчерпании палитры цвета повторяются.
-
-    :param page: объект ProjectPage, в котором хранится карта цветов
-    :param group_name: исходное имя группы
-    :return: QColor с выбранным цветом или прозрачный QColor
+    In the current implementation colors are assigned within
+    ``reload_zone_tabs``. It always returns a transparent color.
     """
-    try:
-        gkey = normalize_case(group_name or "")
-    except Exception:
-        gkey = ""
-    # Не окрашиваем пустые и предопределённые группы. Используем
-    # регистронезависимое сравнение, чтобы корректно обработать
-    # варианты 'Аренда оборудования', 'аренда оборудования' и т.п.
-    try:
-        gkey_lower = str(gkey).strip().lower()
-    except Exception:
-        gkey_lower = ""
-    if not gkey_lower or gkey_lower in ("", "аренда оборудования"):
-        return QtGui.QColor(0, 0, 0, 0)
-    # Инициализируем карту при первом использовании
-    if not hasattr(page, "_group_colors") or not isinstance(page._group_colors, dict):
-        page._group_colors = {}
-    # Возвращаем уже назначенный цвет
-    col = page._group_colors.get(gkey)
-    if col is not None:
-        return col
-    # Назначаем следующий цвет из палитры
-    idx = len(page._group_colors) % len(GROUP_COLOR_PALETTE)
-    col = GROUP_COLOR_PALETTE[idx]
-    page._group_colors[gkey] = col
-    return col
+    # Always return transparent color; colors are assigned in reload_zone_tabs
+    return QtGui.QColor(0, 0, 0, 0)
 
 def compute_fin_snapshot_data(page: Any) -> Dict[str, Any]:
     """
@@ -1279,6 +1250,15 @@ def reload_zone_tabs(page: Any) -> None:
                         elif abs(diff_qty) >= 1e-6:
                             color = QtGui.QColor(200, 0, 0) if diff_qty > 0 else QtGui.QColor(0, 150, 0)
                 # Формируем значения строк
+                # Заранее инициализируем временную переменную имени позиции. В
+                # ходе выполнения блока try/except ниже могут возникнуть
+                # исключения, из‑за которых ``nm_clean`` не будет присвоено
+                # значение. Чтобы избежать ошибки «cannot access local
+                # variable 'nm_clean' where it is not associated with a
+                # value», инициируем её пустой строкой. Если затем произойдёт
+                # исключение, переменная останется пустой, что безопасно для
+                # дальнейшей обработки.
+                nm_clean = ""
                 # Нормализуем регистр отображаемых полей (наименование, подрядчик, отдел, зона)
                 # Удаляем ведущие пробелы из наименования перед нормализацией, чтобы не допустить
                 # различий при сравнении групп по пробелам. Имя всегда присутствует в строке
@@ -3079,44 +3059,24 @@ def update_catalog_suggestions(page: Any) -> None:
 
 # 17. Обработка выбора позиции из каталога
 def on_catalog_item_selected(page: Any) -> None:
-    """Заполняет поля ручного добавления выбранной позицией из каталога.
-
-    После выбора позиции из списка подсказок наименование, цена,
-    класс, подрядчик, отдел и потребление подставляются в
-    соответствующие поля, причём редактирование цены и питания
-    блокируется до выхода из режима базы.
     """
-    # Если режим базы данных не активен или комбобокс поиска отсутствует — игнорируем выбор
-    if not getattr(page, "_db_mode_enabled", False) or not hasattr(page, "cmb_search_name"):
-        return
-    idx = page.cmb_search_name.currentIndex()
-    if idx < 0:
-        return
-    data = page.cmb_search_name.itemData(idx)
-    if not data:
-        return
-    row = data
+    Deprecated callback for catalog item selection.
+
+    In earlier versions this function populated manual‑add fields when a
+    user selected an entry from the catalog search combobox. The current
+    UI no longer uses this callback directly; instead the logic is
+    implemented within the catalog dialog itself. The function is kept
+    for backward compatibility and returns immediately.
+    """
+    # To maintain backward compatibility we simply return without doing
+    # anything. If invoked unexpectedly, log a debug message for
+    # diagnostics but do not raise exceptions.
     try:
-        # Заполняем внутренние поля для последующего добавления
-        name_norm = normalize_case(row.get("name", ""))
-        vendor_norm = normalize_case(row.get("vendor", ""))
-        dept_norm = normalize_case(row.get("department", ""))
-        class_en = row.get("class", "equipment")
-        class_ru = CLASS_EN2RU.get(class_en, "Оборудование")
-        price = float(row.get("unit_price", 0.0) or 0.0)
-        power = float(row.get("power_watts", 0.0) or 0.0)
-        # Устанавливаем значения в скрытые поля
-        page.ed_add_name.setText(name_norm)
-        page.ed_add_vendor.setText(vendor_norm)
-        page.cmb_add_department.setEditText(dept_norm)
-        page.cmb_add_class.setCurrentText(class_ru)
-        page.sp_add_price.setValue(price)
-        page.sp_add_power.setValue(power)
-        # Блокируем редактирование цены и потребления на всякий случай
-        page.sp_add_price.setReadOnly(True)
-        page.sp_add_power.setReadOnly(True)
-    except Exception as ex:
-        page._log(f"Ошибка заполнения позиции каталога: {ex}", "error")
+        if hasattr(page, '_log'):
+            page._log("on_catalog_item_selected called but this callback is deprecated and no longer performs any action.", "info")
+    except Exception:
+        pass
+    return
 
 
 # 18. Добавление позиции из каталога в смету
@@ -5513,110 +5473,26 @@ def open_column_master(page: Any) -> None:
 
 
 def edit_selected_screen(page: Any) -> None:
-    """Редактирует выбранный экран и связанные с ним позиции (витая пара, видеопроцессор).
-
-    Пользователь должен предварительно выделить строку в таблице сводной сметы,
-    содержащую экран (наименование начинается с «LED экран»). Функция извлекает
-    исходные параметры экрана (ширина, высота, разрешение модуля, цена за м²,
-    подрядчик, отдел) из имени и таблицы, затем открывает диалог мастера с
-    этими значениями. После изменения параметры записываются обратно в
-    соответствующие строки таблицы «items» проекта, а также корректируются
-    связанные записи витой пары и видеопроцессора. При отключении
-    соответствующих чекбоксов в диалоге такие позиции будут удалены.
     """
-    # 21.1 Проверяем выбор проекта
-    if getattr(page, "project_id", None) is None:
-        QtWidgets.QMessageBox.information(page, "Внимание", "Сначала откройте проект.")
-        return
-    # 21.2 Находим выбранную строку в таблицах зон
-    selected_info = None
-    for zone_val, tbl in page.zone_tables.items():
-        sel = tbl.selectionModel() if tbl else None
-        if sel and sel.hasSelection():
-            rows = sel.selectedRows()
-            if rows:
-                row_idx = rows[0].row()
-                # Собираем данные: название, цена, vendor, dept, zone
-                name = tbl.item(row_idx, 0).text() if tbl.item(row_idx, 0) else ""
-                price_txt = tbl.item(row_idx, 3).text() if tbl.item(row_idx, 3) else ""
-                vendor = tbl.item(row_idx, 5).text() if tbl.item(row_idx, 5) else ""
-                department = tbl.item(row_idx, 6).text() if tbl.item(row_idx, 6) else ""
-                # Определяем зону ("Без зоны" -> "")
-                zone_name = tbl.item(row_idx, 7).text() if tbl.item(row_idx, 7) else ""
-                zone = "" if not zone_name or zone_name.lower() in {"без зоны", "<пусто>"} else zone_name.strip()
-                selected_info = (name, price_txt, vendor, department, zone)
-                break
-    if not selected_info:
-        QtWidgets.QMessageBox.information(page, "Редактирование", "Выберите экран для редактирования.")
-        return
-    name, price_txt, vendor_old, dept_old, zone_old = selected_info
-    # 21.3 Проверяем, является ли выбранный элемент экраном
-    if not name.lower().startswith("led экран"):
-        QtWidgets.QMessageBox.information(page, "Редактирование", "Выбранная позиция не является экраном.")
-        return
-    import re
-    import math
-    # 21.4 Извлекаем размеры и разрешение из имени
-    pattern = r"LED экран ([0-9]+(?:\.[0-9]+)?)×([0-9]+(?:\.[0-9]+)?) м \((\d+) кабинетов, (\d+)×(\d+) пикселей\)"
-    m = re.match(pattern, name)
-    if not m:
-        QtWidgets.QMessageBox.information(page, "Редактирование", "Не удалось распарсить параметры экрана.")
-        return
+    Deprecated handler for editing a selected LED screen.
+
+    In older versions this function opened a detailed wizard to edit the
+    dimensions, resolution and pricing of a selected LED screen along
+    with associated items like twisted pair cables and video processors.
+    The current application flow no longer provides in‑place editing of
+    screens via this function. The handler is retained for backward
+    compatibility but performs no actions. To edit screens users should
+    delete the old entry and add a new one via the master dialog.
+    """
+    # Emit a debug log indicating that editing a selected screen is no
+    # longer supported via this stub. We do not remove the function
+    # entirely to avoid breaking external imports.
     try:
-        width = float(m.group(1))
-        height = float(m.group(2))
-        cabinets_old = int(m.group(3))
-        res_x_old = int(m.group(4))
-        res_y_old = int(m.group(5))
+        if hasattr(page, '_log'):
+            page._log("edit_selected_screen called but this feature has been deprecated. Use the master dialog to add or adjust screens.", "info")
     except Exception:
-        QtWidgets.QMessageBox.information(page, "Редактирование", "Ошибка разбора параметров экрана.")
-        return
-    # 21.5 Вычисляем разрешение модуля из старых параметров
-    cab_w_old = max(1, math.ceil(width * 2))
-    cab_h_old = max(1, math.ceil(height * 2))
-    mod_px_w = int(res_x_old / cab_w_old)
-    mod_px_h = int(res_y_old / cab_h_old)
-    # 21.6 Цена за м² (unit_price) - преобразуем
-    try:
-        price_per_m2 = to_float(price_txt, 0.0)
-    except Exception:
-        price_per_m2 = 0.0
-    # 21.7 Определяем наличие витой пары и видеопроцессора
-    has_cable = False
-    has_vp = False
-    try:
-        cur = page.db._conn.cursor()
-        cur.execute(
-            "SELECT COUNT(*) FROM items WHERE project_id=? AND name LIKE ? AND LOWER(COALESCE(vendor,''))=LOWER(?) AND LOWER(COALESCE(zone,''))=LOWER(?)",
-            (page.project_id, "Витая пара для LED%", vendor_old, zone_old or ""),
-        )
-        has_cable = cur.fetchone()[0] > 0
-        cur.execute(
-            "SELECT COUNT(*) FROM items WHERE project_id=? AND name LIKE ? AND LOWER(COALESCE(vendor,''))=LOWER(?) AND LOWER(COALESCE(zone,''))=LOWER(?)",
-            (page.project_id, "Видеопроцессор для LED%", vendor_old, zone_old or ""),
-        )
-        has_vp = cur.fetchone()[0] > 0
-    except Exception:
-        has_cable = False
-        has_vp = False
-    # 21.8 Запускаем диалог мастера с предзаполненными значениями
-    dlg = open_screen_master.__globals__["ScreenMasterDialog"](page)  # type: ignore
-    dlg.ed_width.setValue(width)
-    dlg.ed_height.setValue(height)
-    dlg.spin_mod_w.setValue(mod_px_w)
-    dlg.spin_mod_h.setValue(mod_px_h)
-    dlg.spin_price.setValue(price_per_m2)
-    # Устанавливаем подрядчика и отдел
-    def set_combo(combo: QtWidgets.QComboBox, text: str) -> None:
-        if not text:
-            return
-        for i in range(combo.count()):
-            if combo.itemText(i).lower() == text.lower():
-                combo.setCurrentIndex(i)
-                return
-        combo.addItem(text)
-        combo.setCurrentIndex(combo.count() - 1)
-    set_combo(dlg.cmb_vendor, vendor_old)
+        pass
+    return
     set_combo(dlg.cmb_department, dept_old)
     dlg.chk_cable.setChecked(has_cable)
     dlg.chk_vp.setChecked(has_vp)
