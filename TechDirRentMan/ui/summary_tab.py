@@ -86,15 +86,27 @@ import logging
 # желтых и синих оттенков подряд, исключаем один из светлых
 # оранжевых цветов (255, 204, 102). Таким образом вероятность
 # соседства синих и желтых цветов снижается.
+# Расширенная палитра групповых цветов. Цвета подобраны так, чтобы обеспечить
+# максимальную различимость и избежать соседства схожих оттенков. При
+# нехватке цветов палитра повторяется циклически. В отличие от прежней
+# палитры, здесь добавлены дополнительные оттенки (жёлтый, оранжевый,
+# бирюзовый, сиреневый и др.), что позволяет окрашивать большее
+# количество групп без повторений.
 GROUP_COLOR_PALETTE: List[QtGui.QColor] = [
     QtGui.QColor(255, 102, 102),   # светло‑красный
     QtGui.QColor(255, 153, 102),   # персиковый
-    # QtGui.QColor(255, 204, 102), # нежно‑оранжевый (исключён)
+    QtGui.QColor(255, 204, 102),   # нежно‑оранжевый
+    QtGui.QColor(255, 255, 102),   # светло‑жёлтый
     QtGui.QColor(204, 255, 102),   # салатовый
+    QtGui.QColor(153, 255, 102),   # лаймовый
     QtGui.QColor(102, 255, 178),   # бирюзовый
+    QtGui.QColor(102, 255, 204),   # бирюзовый светлый
+    QtGui.QColor(102, 204, 255),   # небесно‑голубой
     QtGui.QColor(102, 178, 255),   # голубой
     QtGui.QColor(178, 102, 255),   # сиреневый
+    QtGui.QColor(204, 102, 255),   # фиолетовый
     QtGui.QColor(255, 102, 178),   # розовый
+    QtGui.QColor(255, 102, 204),   # розово‑фиолетовый
 ]
 
 def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
@@ -771,16 +783,26 @@ def build_zone_table(page: Any) -> QtWidgets.QTableWidget:
     # Устанавливаем моноширинный шрифт для таблицы, чтобы префиксы групп
     # отображались с одинаковым шагом. Это помогает устранить визуальные
     # различия в отступах из‑за разных ширин букв.
+    # Возвращаем стандартный шрифт таблицы без явного задания моноширинного стиля.
+    # Оставляем выбор шрифта Qt по умолчанию, чтобы внешний вид соответствовал
+    # исходному дизайну приложения. В случае ошибок просто игнорируем настройку.
     try:
         font = t.font()
-        # hint для моноширинного шрифта
-        font.setStyleHint(QtGui.QFont.TypeWriter)
         t.setFont(font)
     except Exception:
         pass
+    # Высота строк подстраивается под содержимое (режим ResizeToContents),
+    # что позволяет отображать длинные имена на нескольких строках. Мы не
+    # изменяем ширину вертикального заголовка, иначе это приводило к
+    # чрезмерному увеличению высоты строк.
     t.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+    # Настраиваем приоритет колонки «Наименование» и растяжение остальных
     setup_priority_name(t, name_col=0)
     return t
+
+# Функция _adjust_vheader_width была удалена, так как изменение размера секций
+# вертикального заголовка приводило к увеличению высоты строк. Для устранения
+# разницы в отступах достаточно выравнивания текста по левому краю.
 
 
 # 3. Инициализация табов зон
@@ -1103,6 +1125,24 @@ def reload_zone_tabs(page: Any) -> None:
     """
     if page.project_id is None:
         return
+
+    # Перед перестроением таблиц выполняем санитизацию позиций. Это удаляет
+    # невидимые символы (неразрывные пробелы, табуляции) и обрезает
+    # лишние пробелы по краям. Санитизация предотвращает некорректное
+    # группирование и окрашивание, особенно после импорта или ручного
+    # ввода. Результат заносится в лог.
+    try:
+        updated_count = page.db.sanitize_items()
+        if updated_count:
+            try:
+                page._log(f"Сводная смета: санитизация обновила {updated_count} позиций.")
+            except Exception:
+                pass
+    except Exception as _ex:
+        try:
+            page._log(f"Сводная смета: ошибка санитизации позиций: {_ex}")
+        except Exception:
+            pass
     # При смене проекта обновляем список сохранённых снимков
     if getattr(page, "_snapshots_loaded_project_id", None) != page.project_id:
         load_snapshot_list(page)
@@ -1244,9 +1284,18 @@ def reload_zone_tabs(page: Any) -> None:
                 # различий при сравнении групп по пробелам. Имя всегда присутствует в строке
                 # sqlite3.Row, используем значение или пустую строку
                 try:
-                    nm_clean = (r["name"] or "").lstrip()
+                    # Получаем строковое наименование и заменяем любые пробельные
+                    # символы на обычный пробел. Затем удаляем пробелы по краям
+                    # методом strip(), чтобы устранить как ведущие, так и
+                    # хвостовые пробелы. Это помогает избежать скрытых
+                    # отступов, которые могут нарушать группировку и окраску.
+                    raw_nm = r["name"] or ""
+                    if isinstance(raw_nm, str):
+                        raw_nm = "".join(" " if ch.isspace() else ch for ch in raw_nm)
+                    nm_clean = str(raw_nm).strip()
                 except Exception:
                     nm_clean = ""
+                # Нормализуем регистр имени позиции для корректной сортировки
                 name_norm = normalize_case(nm_clean)
                 vendor_norm = normalize_case(r["vendor"] or "")
                 department_norm = normalize_case(r["department"] or "")
@@ -1277,6 +1326,10 @@ def reload_zone_tabs(page: Any) -> None:
                 ]
                 for c, v in enumerate(vals):
                     item = QtWidgets.QTableWidgetItem(str(v))
+                    # Выравниваем текст по левому краю и по центру по вертикали.
+                    # Это устраняет возможные дополнительные отступы, которые
+                    # Qt может добавлять по умолчанию для разных режимов отображения.
+                    item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
                     if c == 0:
                         item.setData(QtCore.Qt.UserRole, item_id)
                     # Разрешаем редактирование только для кол-ва, коэффициента и цены (столбцы 2, 4, 5)
@@ -1612,7 +1665,9 @@ def reload_zone_tabs(page: Any) -> None:
                     if isinstance(raw_name, str):
                         # Заменяем любой пробельный символ на обычный пробел
                         raw_name = "".join(" " if ch.isspace() else ch for ch in raw_name)
-                    base_name = str(raw_name).lstrip()
+                    # Удаляем пробелы с обоих концов, а не только в начале,
+                    # чтобы избежать появления отступов и хвостовых пробелов
+                    base_name = str(raw_name).strip()
                 except Exception:
                     base_name = str(raw_name).lstrip() if raw_name else ""
                 try:
@@ -1637,7 +1692,8 @@ def reload_zone_tabs(page: Any) -> None:
                             remainder = "".join(" " if ch.isspace() else ch for ch in remainder)
                             # удаляем ведущие двоеточие и пробелы
                             remainder = remainder.lstrip(" :")
-                            base_name = remainder.lstrip()
+                            # Полностью убираем пробелы по краям оставшейся строки
+                            base_name = remainder.strip()
                         except Exception:
                             base_name = base_name
                         name_lower = base_name.lower() if base_name else ""
@@ -1677,6 +1733,15 @@ def reload_zone_tabs(page: Any) -> None:
                 total_amount += rec["amount_sum"]
         table.blockSignals(False)
         apply_auto_col_resize(table)
+        # Корректируем ширину вертикального заголовка после изменения данных,
+        # чтобы номера строк занимали фиксированное место. Это снижает
+        # визуальный «дрейф» текста между строками при разном количестве
+        # цифр в номерах строк.
+        # В прежних версиях использовалась функция ``_adjust_vheader_width``
+        # для принудительного изменения ширины вертикального заголовка. Она была
+        # удалена, поскольку приводила к чрезмерному увеличению высоты строк.
+        # Удаляем вызов, чтобы избежать подобных артефактов.
+        # _adjust_vheader_width(table)
     # Сумма зависит не только от фильтров, но и от выбранной зоны.
     # Определяем активную зону: индекс вкладки и соответствующий ключ.
     try:
@@ -3396,9 +3461,56 @@ def show_catalog_dialog(page: Any) -> None:
                         # Сохраняем оригинальные данные в первом столбце
                         item.setData(QtCore.Qt.UserRole, dict(r))
                     self.tbl.setItem(row_idx, col, item)
-            # Подстраиваем ширину колонок под содержимое
+            # Планируем корректировку ширины колонок после отрисовки.
+            # Используем таймер с нулевой задержкой, чтобы дать Qt
+            # возможность вычислить фактическую ширину таблицы.
             try:
-                self.tbl.resizeColumnsToContents()
+                QtCore.QTimer.singleShot(0, self._adjust_column_widths)
+            except Exception:
+                pass
+
+        def _adjust_column_widths(self) -> None:
+            """
+            Делит доступную ширину таблицы так, чтобы колонка
+            «Наименование» была шире остальных (около 3 единиц),
+            а оставшееся пространство распределялось поровну.
+            В случае ошибок просто игнорирует настройку.
+            """
+            try:
+                ncols = self.tbl.columnCount()
+                if ncols <= 1:
+                    return
+                total_width = self.tbl.viewport().width()
+                if total_width <= 0:
+                    total_width = self.tbl.width()
+                # 3 единицы на первую колонку, по 1 на остальные
+                units = 3 + (ncols - 1)
+                name_width = int(total_width * 3 / units)
+                remain = max(total_width - name_width, 0)
+                other_width = int(remain / (ncols - 1)) if (ncols - 1) > 0 else 0
+                header = self.tbl.horizontalHeader()
+                header.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
+                header.resizeSection(0, name_width)
+                for i in range(1, ncols):
+                    header.resizeSection(i, other_width)
+            except Exception:
+                pass
+
+        def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore
+            """
+            При изменении размера окна диалога перераспределяет
+            ширину столбцов, чтобы колонка «Наименование» оставалась
+            пропорционально самой широкой. Использует отложенный вызов
+            через ``QTimer.singleShot``, чтобы дождаться применения новой
+            геометрии.
+            """
+            # Вызываем родительский обработчик для стандартной логики
+            try:
+                super().resizeEvent(event)
+            except Exception:
+                pass
+            try:
+                QtCore.QTimer.singleShot(0, self._adjust_column_widths)
             except Exception:
                 pass
 

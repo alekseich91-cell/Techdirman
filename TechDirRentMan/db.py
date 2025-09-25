@@ -33,6 +33,7 @@ import sqlite3
 import datetime
 import csv
 import logging
+import unicodedata
 from pathlib import Path
 from typing import Iterable, Any, Optional, Dict, List, Tuple
 
@@ -360,18 +361,21 @@ if True:
                 # и табы на обычные пробелы. Затем в зависимости от поля удаляем
                 # пробелы слева/справа. Для name применяем strip(), чтобы полностью
                 # убрать скрытые отступы.
+                # Сначала заменяем некоторые разновидности пробелов на обычный пробел
                 value = (
                     value.replace("\u00A0", " ")
                          .replace("\u202F", " ")
                          .replace("\u2007", " ")
                          .replace("\t", " ")
                 )
-                if field == "name":
-                    # Полное удаление ведущих и хвостовых пробелов
-                    value = value.strip()
-                elif field in {"group_name", "vendor", "department", "zone"}:
-                    # Для остальных строковых полей достаточно убрать пробелы по краям
-                    value = value.strip()
+                # Удаляем невидимые управляющие символы (форматирующие, нулевой ширины и пр.)
+                try:
+                    value = "".join(ch for ch in value if unicodedata.category(ch)[0] != 'C')
+                except Exception:
+                    # Если не удалось определить категорию, оставляем исходную строку
+                    pass
+                # Обрезаем пробелы по краям для всех строковых полей
+                value = value.strip()
             try:
                 self._conn.execute(f"UPDATE items SET {field}=? WHERE id=?", (value, item_id))
                 self._conn.commit()
@@ -395,19 +399,22 @@ if True:
                     continue
                 val = v
                 if isinstance(val, str):
-                    # Заменяем неразрывные/тонкие пробелы и табы для консистентности
+                    # Заменяем неразрывные/тонкие пробелы и табы на обычный пробел
                     val = (
                         val.replace("\u00A0", " ")
                            .replace("\u202F", " ")
                            .replace("\u2007", " ")
                            .replace("\t", " ")
                     )
-                    if k == "name":
-                        # Удаляем пробелы с обоих концов, чтобы избавиться от скрытых отступов
-                        val = val.strip()
-                    elif k in {"group_name", "vendor", "department", "zone"}:
-                        # Для остальных строковых полей убираем пробелы по краям
-                        val = val.strip()
+                    # Удаляем управляющие и форматирующие символы (Unicode category 'C*'),
+                    # чтобы исключить невидимые отступы (например, нулевой ширины
+                    # пробелы, управляющие символы, BOM)
+                    try:
+                        val = "".join(ch for ch in val if unicodedata.category(ch)[0] != 'C')
+                    except Exception:
+                        pass
+                    # Обрезаем пробелы по краям для всех строковых полей
+                    val = val.strip()
                 pairs.append((k, val))
             if not pairs:
                 return
@@ -797,91 +804,58 @@ if True:
             некорректной группировке и окрашиванию.
             """
             cur = self._conn.cursor()
-            cur.execute("SELECT id, name, group_name, vendor, department, zone FROM items")
+            cur.execute(
+                "SELECT id, name, group_name, vendor, department, zone FROM items"
+            )
             rows = cur.fetchall()
             updated_count = 0
             for row in rows:
+                # sqlite3.Row не поддерживает метод get(), поэтому
+                # преобразуем строку в словарь для удобного доступа.
+                try:
+                    row_dict = dict(row)
+                except Exception:
+                    row_dict = {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "group_name": row["group_name"],
+                        "vendor": row["vendor"],
+                        "department": row["department"],
+                        "zone": row["zone"],
+                    }
                 updates: Dict[str, Any] = {}
-                # name: replace special spaces and lstrip
-                try:
-                    nm = str(row["name"])
-                except Exception:
-                    nm = ""
-                    # Заменяем неразрывные/тонкие пробелы и табы в имени на обычные пробелы
-                    nm2 = (
-                        nm.replace("\u00A0", " ")
-                          .replace("\u202F", " ")
-                          .replace("\u2007", " ")
-                          .replace("\t", " ")
+                # Перебираем интересующие поля для нормализации
+                for fld in ["name", "group_name", "vendor", "department", "zone"]:
+                    try:
+                        val = str(row_dict.get(fld, "") or "")
+                    except Exception:
+                        val = ""
+                    # Заменяем неразрывные/тонкие пробелы и табы на обычный пробел
+                    val_norm = (
+                        val.replace("\u00A0", " ")
+                            .replace("\u202F", " ")
+                            .replace("\u2007", " ")
+                            .replace("\t", " ")
                     )
-                    # Удаляем пробелы с начала и конца, чтобы избежать влияния
-                    # скрытых символов на группировку и цветовую раскраску
-                    nm_clean = nm2.strip()
-                if nm_clean != nm:
-                    updates["name"] = nm_clean
-                # group_name: replace special spaces and strip
-                try:
-                    g = str(row["group_name"])
-                except Exception:
-                    g = ""
-                    # Нормализуем group_name: заменяем пробелы и табы, затем обрезаем по краям
-                    g2 = (
-                        g.replace("\u00A0", " ")
-                         .replace("\u202F", " ")
-                         .replace("\u2007", " ")
-                         .replace("\t", " ")
-                    )
-                    g_clean = g2.strip()
-                if g_clean != g:
-                    updates["group_name"] = g_clean
-                # vendor
-                try:
-                    v = str(row["vendor"] or "")
-                except Exception:
-                    v = ""
-                    # Нормализуем vendor: заменяем пробелы и табы, затем убираем пробелы по краям
-                    v2 = (
-                        v.replace("\u00A0", " ")
-                         .replace("\u202F", " ")
-                         .replace("\u2007", " ")
-                         .replace("\t", " ")
-                    )
-                    v_clean = v2.strip()
-                if v_clean != v:
-                    updates["vendor"] = v_clean
-                # department
-                try:
-                    d = str(row["department"] or "")
-                except Exception:
-                    d = ""
-                    # Нормализуем department: заменяем пробелы и табы, затем убираем пробелы по краям
-                    d2 = (
-                        d.replace("\u00A0", " ")
-                         .replace("\u202F", " ")
-                         .replace("\u2007", " ")
-                         .replace("\t", " ")
-                    )
-                    d_clean = d2.strip()
-                if d_clean != d:
-                    updates["department"] = d_clean
-                # zone
-                try:
-                    z = str(row["zone"] or "")
-                except Exception:
-                    z = ""
-                    # Нормализуем zone: заменяем пробелы и табы, затем убираем пробелы по краям
-                    z2 = (
-                        z.replace("\u00A0", " ")
-                         .replace("\u202F", " ")
-                         .replace("\u2007", " ")
-                         .replace("\t", " ")
-                    )
-                    z_clean = z2.strip()
-                if z_clean != z:
-                    updates["zone"] = z_clean
+                    # Удаляем управляющие/форматирующие символы (категория 'C')
+                    try:
+                        val_norm = "".join(
+                            ch for ch in val_norm if unicodedata.category(ch)[0] != 'C'
+                        )
+                    except Exception:
+                        pass
+                    # Обрезаем пробелы по краям
+                    val_clean = val_norm.strip()
+                    if val_clean != val:
+                        updates[fld] = val_clean
                 if updates:
-                    self.update_item_fields(row["id"], updates)
-                    updated_count += 1
+                    # Обновляем запись, используя update_item_fields, который также нормализует
+                    try:
+                        self.update_item_fields(row_dict["id"], updates)
+                        updated_count += 1
+                    except Exception:
+                        # Игнорируем ошибки обновления, чтобы не останавливать процесс
+                        pass
             return updated_count
 
         # 2.7 Прочее
