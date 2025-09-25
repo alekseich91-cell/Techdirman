@@ -268,20 +268,34 @@ if True:
                             "type": it.get("type", "equipment"),
                             # Если group_name отсутствует, используем значение по умолчанию. Перед обрезкой
                             # заменяем особые пробелы (NBSP, тонкие пробелы) на обычные, затем strip().
-                            "group_name": str(it.get("group_name", "Аренда оборудования")).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").strip(),
-                            # Наименование: заменяем особые пробелы на обычные, потом lstrip() для удаления
-                            # всех ведущих пробелов. Хвостовые пробелы оставляем нетронутыми.
-                            "name": str(it.get("name", "")).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").lstrip(),
+                                # Нормализуем group_name: заменяем неразрывные/тонкие пробелы и табы на обычный пробел,
+                                # затем убираем пробелы по краям. Это исключает образование
+                                # нескольких групп из‑за невидимых символов и делает строки консистентными.
+                                "group_name": str(it.get("group_name", "Аренда оборудования"))
+                                .replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").replace("\t", " ")
+                                .strip(),
+                                # Наименование: заменяем неразрывные, тонкие пробелы и табы на обычные.
+                                # Далее удаляем пробелы как слева, так и справа, чтобы скрытые отступы
+                                # не влияли на группировку и цветовую раскраску в сводной смете.
+                                "name": str(it.get("name", ""))
+                                .replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").replace("\t", " ")
+                                .strip(),
                             "qty": float(it.get("qty", 1) or 1),
                             "coeff": float(it.get("coeff", 1) or 1),
                             "amount": float(it.get("amount", 0) or 0),
                             "unit_price": float(it.get("unit_price", 0) or 0),
                             "source_file": it.get("source_file"),
                             "created_at": it.get("created_at") or now,
-                            # vendor/department/zone: заменяем особые пробелы и обрезаем по краям
-                            "vendor": str(it.get("vendor", "")).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").strip(),
-                            "department": str(it.get("department", "")).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").strip(),
-                            "zone": str(it.get("zone", "")).replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").strip(),
+                                # vendor/department/zone: заменяем неразрывные/тонкие пробелы и табы, затем обрезаем по краям
+                                "vendor": str(it.get("vendor", ""))
+                                .replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").replace("\t", " ")
+                                .strip(),
+                                "department": str(it.get("department", ""))
+                                .replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").replace("\t", " ")
+                                .strip(),
+                                "zone": str(it.get("zone", ""))
+                                .replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ").replace("\t", " ")
+                                .strip(),
                             "power_watts": float(it.get("power_watts", 0) or 0),
                             "import_batch": it.get("import_batch"),
                         }
@@ -342,13 +356,21 @@ if True:
             assert field in {"type", "group_name", "name", "qty", "coeff", "amount", "unit_price", "vendor", "department", "zone", "power_watts"}
             # Нормализуем строковые значения перед обновлением, чтобы в базе не было лидирующих пробелов
             if isinstance(value, str):
-                # Заменяем особые пробелы на обычные, затем обрезаем в зависимости от поля.
-                value = value.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
+                # Нормализация строкового значения: заменяем неразрывные/тонкие пробелы
+                # и табы на обычные пробелы. Затем в зависимости от поля удаляем
+                # пробелы слева/справа. Для name применяем strip(), чтобы полностью
+                # убрать скрытые отступы.
+                value = (
+                    value.replace("\u00A0", " ")
+                         .replace("\u202F", " ")
+                         .replace("\u2007", " ")
+                         .replace("\t", " ")
+                )
                 if field == "name":
-                    # Удаляем только ведущие пробелы, чтобы сохранить внутренние/хвостовые
-                    value = value.lstrip()
+                    # Полное удаление ведущих и хвостовых пробелов
+                    value = value.strip()
                 elif field in {"group_name", "vendor", "department", "zone"}:
-                    # Удаляем пробелы по краям
+                    # Для остальных строковых полей достаточно убрать пробелы по краям
                     value = value.strip()
             try:
                 self._conn.execute(f"UPDATE items SET {field}=? WHERE id=?", (value, item_id))
@@ -373,13 +395,18 @@ if True:
                     continue
                 val = v
                 if isinstance(val, str):
-                    # Заменяем особые пробелы на обычные для консистентности
-                    val = val.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
+                    # Заменяем неразрывные/тонкие пробелы и табы для консистентности
+                    val = (
+                        val.replace("\u00A0", " ")
+                           .replace("\u202F", " ")
+                           .replace("\u2007", " ")
+                           .replace("\t", " ")
+                    )
                     if k == "name":
-                        # Удаляем только ведущие пробелы
-                        val = val.lstrip()
+                        # Удаляем пробелы с обоих концов, чтобы избавиться от скрытых отступов
+                        val = val.strip()
                     elif k in {"group_name", "vendor", "department", "zone"}:
-                        # Удаляем пробелы по краям
+                        # Для остальных строковых полей убираем пробелы по краям
                         val = val.strip()
                 pairs.append((k, val))
             if not pairs:
@@ -780,8 +807,16 @@ if True:
                     nm = str(row["name"])
                 except Exception:
                     nm = ""
-                nm2 = nm.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
-                nm_clean = nm2.lstrip()
+                    # Заменяем неразрывные/тонкие пробелы и табы в имени на обычные пробелы
+                    nm2 = (
+                        nm.replace("\u00A0", " ")
+                          .replace("\u202F", " ")
+                          .replace("\u2007", " ")
+                          .replace("\t", " ")
+                    )
+                    # Удаляем пробелы с начала и конца, чтобы избежать влияния
+                    # скрытых символов на группировку и цветовую раскраску
+                    nm_clean = nm2.strip()
                 if nm_clean != nm:
                     updates["name"] = nm_clean
                 # group_name: replace special spaces and strip
@@ -789,8 +824,14 @@ if True:
                     g = str(row["group_name"])
                 except Exception:
                     g = ""
-                g2 = g.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
-                g_clean = g2.strip()
+                    # Нормализуем group_name: заменяем пробелы и табы, затем обрезаем по краям
+                    g2 = (
+                        g.replace("\u00A0", " ")
+                         .replace("\u202F", " ")
+                         .replace("\u2007", " ")
+                         .replace("\t", " ")
+                    )
+                    g_clean = g2.strip()
                 if g_clean != g:
                     updates["group_name"] = g_clean
                 # vendor
@@ -798,8 +839,14 @@ if True:
                     v = str(row["vendor"] or "")
                 except Exception:
                     v = ""
-                v2 = v.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
-                v_clean = v2.strip()
+                    # Нормализуем vendor: заменяем пробелы и табы, затем убираем пробелы по краям
+                    v2 = (
+                        v.replace("\u00A0", " ")
+                         .replace("\u202F", " ")
+                         .replace("\u2007", " ")
+                         .replace("\t", " ")
+                    )
+                    v_clean = v2.strip()
                 if v_clean != v:
                     updates["vendor"] = v_clean
                 # department
@@ -807,8 +854,14 @@ if True:
                     d = str(row["department"] or "")
                 except Exception:
                     d = ""
-                d2 = d.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
-                d_clean = d2.strip()
+                    # Нормализуем department: заменяем пробелы и табы, затем убираем пробелы по краям
+                    d2 = (
+                        d.replace("\u00A0", " ")
+                         .replace("\u202F", " ")
+                         .replace("\u2007", " ")
+                         .replace("\t", " ")
+                    )
+                    d_clean = d2.strip()
                 if d_clean != d:
                     updates["department"] = d_clean
                 # zone
@@ -816,8 +869,14 @@ if True:
                     z = str(row["zone"] or "")
                 except Exception:
                     z = ""
-                z2 = z.replace("\u00A0", " ").replace("\u202F", " ").replace("\u2007", " ")
-                z_clean = z2.strip()
+                    # Нормализуем zone: заменяем пробелы и табы, затем убираем пробелы по краям
+                    z2 = (
+                        z.replace("\u00A0", " ")
+                         .replace("\u202F", " ")
+                         .replace("\u2007", " ")
+                         .replace("\t", " ")
+                    )
+                    z_clean = z2.strip()
                 if z_clean != z:
                     updates["zone"] = z_clean
                 if updates:

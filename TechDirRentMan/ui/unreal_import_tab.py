@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 # 2. Импорт библиотек PySide6
-from PySide6 import QtWidgets, QtCore
+from PySide6 import QtWidgets, QtCore, QtGui
 from openpyxl import load_workbook
 
 # 3. Импорт внутренних модулей
@@ -199,13 +199,15 @@ class CatalogSelectDialog(QtWidgets.QDialog):
         filt.addStretch(1)
         v.addLayout(filt)
 
-        # 4.2 Таблица каталога
+        # 4.2 Таблица каталога. По умолчанию используем Stretch, далее вручную
+        # распределим ширину столбцов после заполнения.
         self.tbl = QtWidgets.QTableWidget(0, 6)
         self.tbl.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         headers = ["Наименование", "Класс", "Подрядчик", "Цена", "Потр. (Вт)", "Отдел"]
         self.tbl.setHorizontalHeaderLabels(headers)
+        # Изначально все столбцы будут растягиваться, затем скорректируем
         self.tbl.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         v.addWidget(self.tbl, 1)
 
@@ -237,18 +239,18 @@ class CatalogSelectDialog(QtWidgets.QDialog):
         self.cmb_vendor.blockSignals(True)
         self.cmb_vendor.clear()
         self.cmb_vendor.addItem("<Любой>", None)
-        for v in vendors:
-            if v:
-                self.cmb_vendor.addItem(normalize_case(v), v)
+        for vitem in vendors:
+            if vitem:
+                self.cmb_vendor.addItem(normalize_case(vitem), vitem)
         self.cmb_vendor.setCurrentIndex(0)
         self.cmb_vendor.blockSignals(False)
         # Отделы
         self.cmb_department.blockSignals(True)
         self.cmb_department.clear()
         self.cmb_department.addItem("<Любой>", None)
-        for d in departments:
-            if d:
-                self.cmb_department.addItem(normalize_case(d), d)
+        for ditem in departments:
+            if ditem:
+                self.cmb_department.addItem(normalize_case(ditem), ditem)
         self.cmb_department.setCurrentIndex(0)
         self.cmb_department.blockSignals(False)
 
@@ -305,8 +307,64 @@ class CatalogSelectDialog(QtWidgets.QDialog):
                     # Сохраняем оригинальную строку в UserRole
                     item.setData(QtCore.Qt.UserRole, dict(r))
                 self.tbl.setItem(idx, col, item)
+        # После заполнения планируем корректировку ширины столбцов
+        # через таймер, чтобы дождаться вычисления полной ширины таблицы.
         try:
-            self.tbl.resizeColumnsToContents()
+            QtCore.QTimer.singleShot(0, self._adjust_column_widths)
+        except Exception:
+            pass
+
+    def _adjust_column_widths(self) -> None:
+        """
+        Делит пространство таблицы так, чтобы столбец с наименованием был
+        самым широким (примерно втрое шире других), а оставшееся место
+        поровну распределялось между прочими столбцами.
+
+        Метод старается работать даже если таблица ещё не полностью
+        отрисована: используется ширина viewport либо общая ширина таблицы.
+        При ошибках выводит сообщение в лог, но не прерывает выполнение.
+        """
+        try:
+            ncols = self.tbl.columnCount()
+            if ncols <= 1:
+                return
+            # Попытка получить ширину рабочей области таблицы; при
+            # неудаче fallback на общую ширину виджета
+            total_width = self.tbl.viewport().width()
+            if total_width <= 0:
+                total_width = self.tbl.width()
+            # Единица измерения: 3 единицы на колонку имени + 1 единица на каждую из остальных
+            total_units = 3 + (ncols - 1)
+            name_width = int(total_width * 3 / total_units)
+            # Распределяем остаток поровну по остальным колонкам
+            remain = max(total_width - name_width, 0)
+            other_width = int(remain / (ncols - 1)) if (ncols - 1) > 0 else 0
+            header = self.tbl.horizontalHeader()
+            # Фиксируем ширину столбцов, чтобы они не растягивались автоматически
+            header.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
+            # Устанавливаем ширину первой колонки
+            header.resizeSection(0, name_width)
+            # Устанавливаем ширины остальных колонок
+            for col in range(1, ncols):
+                header.resizeSection(col, other_width)
+        except Exception as ex:
+            try:
+                self.page._log(f"Ошибка изменения ширины столбцов: {ex}", "error")
+            except Exception:
+                pass
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore
+        """
+        При изменении размера диалога перераспределяет ширину столбцов, чтобы
+        колонка «Наименование» оставалась самой широкой. Использует
+        отложенный вызов для корректной работы.
+        """
+        try:
+            super().resizeEvent(event)
+        except Exception:
+            pass
+        try:
+            QtCore.QTimer.singleShot(0, self._adjust_column_widths)
         except Exception:
             pass
 
@@ -325,7 +383,8 @@ class CatalogSelectDialog(QtWidgets.QDialog):
 
 
 def build_unreal_tab(page: Any, tab: QtWidgets.QWidget) -> None:
-    """Создаёт интерфейс вкладки «Импорт из UE».
+    """
+    Создаёт интерфейс вкладки «Импорт из UE».
 
     :param page: объект ProjectPage для доступа к БД и логированию
     :param tab: виджет, в который будут размещены элементы
@@ -400,7 +459,8 @@ def _ue_choose_file(page: Any) -> None:
 
 
 def _ue_on_file_selected(page: Any, path: Path) -> None:
-    """Обрабатывает выбор файла UE: запрашивает сопоставление столбцов и заполняет таблицу.
+    """
+    Обрабатывает выбор файла UE: запрашивает сопоставление столбцов и заполняет таблицу.
 
     При выборе файла Excel пользователь выбирает, какие столбцы содержат
     наименование и количество. Затем файл читается, и данные заполняют
