@@ -86,37 +86,77 @@ import logging
 # желтых и синих оттенков подряд, исключаем один из светлых
 # оранжевых цветов (255, 204, 102). Таким образом вероятность
 # соседства синих и желтых цветов снижается.
-# Расширенная палитра групповых цветов. Цвета подобраны так, чтобы обеспечить
-# максимальную различимость и избежать соседства схожих оттенков. При
-# нехватке цветов палитра повторяется циклически. В отличие от прежней
-# палитры, здесь добавлены дополнительные оттенки (жёлтый, оранжевый,
-# бирюзовый, сиреневый и др.), что позволяет окрашивать большее
-# количество групп без повторений.
 GROUP_COLOR_PALETTE: List[QtGui.QColor] = [
     QtGui.QColor(255, 102, 102),   # светло‑красный
     QtGui.QColor(255, 153, 102),   # персиковый
-    QtGui.QColor(255, 204, 102),   # нежно‑оранжевый
-    QtGui.QColor(255, 255, 102),   # светло‑жёлтый
+    # QtGui.QColor(255, 204, 102), # нежно‑оранжевый (исключён)
     QtGui.QColor(204, 255, 102),   # салатовый
-    QtGui.QColor(153, 255, 102),   # лаймовый
     QtGui.QColor(102, 255, 178),   # бирюзовый
-    QtGui.QColor(102, 255, 204),   # бирюзовый светлый
-    QtGui.QColor(102, 204, 255),   # небесно‑голубой
     QtGui.QColor(102, 178, 255),   # голубой
     QtGui.QColor(178, 102, 255),   # сиреневый
-    QtGui.QColor(204, 102, 255),   # фиолетовый
     QtGui.QColor(255, 102, 178),   # розовый
-    QtGui.QColor(255, 102, 204),   # розово‑фиолетовый
 ]
 
-def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
-    """(Deprecated) This function is retained for backward compatibility.
+# --------------- Дополнительные утилиты ---------------
 
-    In the current implementation colors are assigned within
-    ``reload_zone_tabs``. It always returns a transparent color.
+def _fix_vertical_header_width(table: QtWidgets.QTableWidget, width: int = 40) -> None:
+    """Устанавливает фиксированную ширину вертикального заголовка (номеров строк).
+
+    Разные значения ширины вертикального заголовка могут приводить к визуальным
+    смещениям строк в таблице, особенно если количество строк в разных зонах
+    сильно отличается. Задав одинаковые минимальную и максимальную ширины,
+    мы стабилизируем этот отступ для всех таблиц. Значение по умолчанию 40
+    подобрано экспериментально и может быть скорректировано при необходимости.
+
+    :param table: Таблица, в которой нужно зафиксировать ширину заголовка
+    :param width: Ширина вертикального заголовка в пикселях
     """
-    # Always return transparent color; colors are assigned in reload_zone_tabs
-    return QtGui.QColor(0, 0, 0, 0)
+    try:
+        vh = table.verticalHeader()
+        # Устанавливаем одинаковые минимальную и максимальную ширины
+        vh.setMinimumWidth(width)
+        vh.setMaximumWidth(width)
+    except Exception:
+        # В случае ошибки silently fail
+        pass
+
+def _get_group_color(page: Any, group_name: str) -> QtGui.QColor:
+    """Возвращает цвет для указанной группы.
+
+    Цвет выбирается из глобальной палитры и сохраняется в атрибуте
+    ``page._group_colors``. Пустое имя группы или служебное значение
+    ('аренда оборудования') возвращает прозрачный цвет, чтобы не
+    окрашивать такие строки. При исчерпании палитры цвета повторяются.
+
+    :param page: объект ProjectPage, в котором хранится карта цветов
+    :param group_name: исходное имя группы
+    :return: QColor с выбранным цветом или прозрачный QColor
+    """
+    try:
+        gkey = normalize_case(group_name or "")
+    except Exception:
+        gkey = ""
+    # Не окрашиваем пустые и предопределённые группы. Используем
+    # регистронезависимое сравнение, чтобы корректно обработать
+    # варианты 'Аренда оборудования', 'аренда оборудования' и т.п.
+    try:
+        gkey_lower = str(gkey).strip().lower()
+    except Exception:
+        gkey_lower = ""
+    if not gkey_lower or gkey_lower in ("", "аренда оборудования"):
+        return QtGui.QColor(0, 0, 0, 0)
+    # Инициализируем карту при первом использовании
+    if not hasattr(page, "_group_colors") or not isinstance(page._group_colors, dict):
+        page._group_colors = {}
+    # Возвращаем уже назначенный цвет
+    col = page._group_colors.get(gkey)
+    if col is not None:
+        return col
+    # Назначаем следующий цвет из палитры
+    idx = len(page._group_colors) % len(GROUP_COLOR_PALETTE)
+    col = GROUP_COLOR_PALETTE[idx]
+    page._group_colors[gkey] = col
+    return col
 
 def compute_fin_snapshot_data(page: Any) -> Dict[str, Any]:
     """
@@ -754,26 +794,16 @@ def build_zone_table(page: Any) -> QtWidgets.QTableWidget:
     # Устанавливаем моноширинный шрифт для таблицы, чтобы префиксы групп
     # отображались с одинаковым шагом. Это помогает устранить визуальные
     # различия в отступах из‑за разных ширин букв.
-    # Возвращаем стандартный шрифт таблицы без явного задания моноширинного стиля.
-    # Оставляем выбор шрифта Qt по умолчанию, чтобы внешний вид соответствовал
-    # исходному дизайну приложения. В случае ошибок просто игнорируем настройку.
     try:
         font = t.font()
+        # hint для моноширинного шрифта
+        font.setStyleHint(QtGui.QFont.TypeWriter)
         t.setFont(font)
     except Exception:
         pass
-    # Высота строк подстраивается под содержимое (режим ResizeToContents),
-    # что позволяет отображать длинные имена на нескольких строках. Мы не
-    # изменяем ширину вертикального заголовка, иначе это приводило к
-    # чрезмерному увеличению высоты строк.
     t.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-    # Настраиваем приоритет колонки «Наименование» и растяжение остальных
     setup_priority_name(t, name_col=0)
     return t
-
-# Функция _adjust_vheader_width была удалена, так как изменение размера секций
-# вертикального заголовка приводило к увеличению высоты строк. Для устранения
-# разницы в отступах достаточно выравнивания текста по левому краю.
 
 
 # 3. Инициализация табов зон
@@ -956,7 +986,18 @@ def group_selected_items(page: Any, zone_key: str) -> None:
                 continue
             row_db = page.db.get_item_by_id(item_id)
             if row_db is not None:
-                g = normalize_case(row_db["group_name"] or "")
+                # Извлекаем видимую часть group_name для предложения по умолчанию.
+                raw_gn = row_db.get("group_name", "") or ""
+                disp_gn = ""
+                try:
+                    if isinstance(raw_gn, str) and raw_gn:
+                        if "|" in raw_gn:
+                            disp_gn = raw_gn.split("|", 1)[1].strip()
+                        else:
+                            disp_gn = raw_gn.strip()
+                except Exception:
+                    disp_gn = ""
+                g = normalize_case(disp_gn) if disp_gn else ""
                 if g:
                     group_names.add(g)
         if len(group_names) == 1:
@@ -971,10 +1012,37 @@ def group_selected_items(page: Any, zone_key: str) -> None:
     )
     if not ok:
         return
-    group_name = normalize_case(name.strip())
-    if not group_name:
+    # Нормализуем введённое имя группы и избавляемся от лишних пробелов. Пустое имя игнорируем.
+    display_name = normalize_case(name.strip())
+    if not display_name:
         return
+    # Формируем новый идентификатор группы. Для уникальности идентификатор
+    # выбирается как максимальный существующий id группы + 1. Формат group_name: "<id>|<отображаемое имя>".
+    new_id = 1
+    try:
+        # Получаем project_id; если неизвестен, пропускаем поиск id (каждая новая группа получит id=1).
+        proj_id = getattr(page, "project_id", None)
+        if proj_id is not None:
+            existing_ids: list[int] = []
+            # Извлекаем все позиции проекта и анализируем поле group_name.
+            for row in page.db.list_items(proj_id) or []:
+                try:
+                    gval = row["group_name"] or ""
+                    if isinstance(gval, str) and "|" in gval:
+                        parts = gval.split("|", 1)
+                        id_part = parts[0].strip()
+                        id_int = int(id_part)
+                        existing_ids.append(id_int)
+                except Exception:
+                    continue
+            if existing_ids:
+                new_id = max(existing_ids) + 1
+    except Exception:
+        # Если произошла ошибка — используем 1 в качестве базового id
+        new_id = 1
+    group_name_value = f"{new_id}|{display_name}"
     updated_count = 0
+    # Обновляем поле group_name для всех выбранных элементов
     for r in selected_rows:
         itm = table.item(r, 0)
         if itm is None:
@@ -985,7 +1053,7 @@ def group_selected_items(page: Any, zone_key: str) -> None:
         except Exception:
             continue
         try:
-            page.db.update_item_fields(item_id, {"group_name": group_name})
+            page.db.update_item_fields(item_id, {"group_name": group_name_value})
             updated_count += 1
         except Exception:
             continue
@@ -1096,24 +1164,6 @@ def reload_zone_tabs(page: Any) -> None:
     """
     if page.project_id is None:
         return
-
-    # Перед перестроением таблиц выполняем санитизацию позиций. Это удаляет
-    # невидимые символы (неразрывные пробелы, табуляции) и обрезает
-    # лишние пробелы по краям. Санитизация предотвращает некорректное
-    # группирование и окрашивание, особенно после импорта или ручного
-    # ввода. Результат заносится в лог.
-    try:
-        updated_count = page.db.sanitize_items()
-        if updated_count:
-            try:
-                page._log(f"Сводная смета: санитизация обновила {updated_count} позиций.")
-            except Exception:
-                pass
-    except Exception as _ex:
-        try:
-            page._log(f"Сводная смета: ошибка санитизации позиций: {_ex}")
-        except Exception:
-            pass
     # При смене проекта обновляем список сохранённых снимков
     if getattr(page, "_snapshots_loaded_project_id", None) != page.project_id:
         load_snapshot_list(page)
@@ -1250,44 +1300,36 @@ def reload_zone_tabs(page: Any) -> None:
                         elif abs(diff_qty) >= 1e-6:
                             color = QtGui.QColor(200, 0, 0) if diff_qty > 0 else QtGui.QColor(0, 150, 0)
                 # Формируем значения строк
-                # Заранее инициализируем временную переменную имени позиции. В
-                # ходе выполнения блока try/except ниже могут возникнуть
-                # исключения, из‑за которых ``nm_clean`` не будет присвоено
-                # значение. Чтобы избежать ошибки «cannot access local
-                # variable 'nm_clean' where it is not associated with a
-                # value», инициируем её пустой строкой. Если затем произойдёт
-                # исключение, переменная останется пустой, что безопасно для
-                # дальнейшей обработки.
-                nm_clean = ""
                 # Нормализуем регистр отображаемых полей (наименование, подрядчик, отдел, зона)
                 # Удаляем ведущие пробелы из наименования перед нормализацией, чтобы не допустить
                 # различий при сравнении групп по пробелам. Имя всегда присутствует в строке
                 # sqlite3.Row, используем значение или пустую строку
                 try:
-                    # Получаем строковое наименование и заменяем любые пробельные
-                    # символы на обычный пробел. Затем удаляем пробелы по краям
-                    # методом strip(), чтобы устранить как ведущие, так и
-                    # хвостовые пробелы. Это помогает избежать скрытых
-                    # отступов, которые могут нарушать группировку и окраску.
-                    raw_nm = r["name"] or ""
-                    if isinstance(raw_nm, str):
-                        raw_nm = "".join(" " if ch.isspace() else ch for ch in raw_nm)
-                    nm_clean = str(raw_nm).strip()
+                    nm_clean = (r["name"] or "").lstrip()
                 except Exception:
                     nm_clean = ""
-                # Нормализуем регистр имени позиции для корректной сортировки
                 name_norm = normalize_case(nm_clean)
                 vendor_norm = normalize_case(r["vendor"] or "")
                 department_norm = normalize_case(r["department"] or "")
                 zone_norm = normalize_case(r["zone"] or "")
                 # При сравнении отображаем имя группы, если оно задано и отличается от имени позиции.
+                # Определяем отображаемое имя для строки снимка. Пытаемся извлечь видимую часть
+                # из group_name (формат "<id>|<название>") или используем старый формат. Если имя
+                # группы совпадает с базовым именем, префикс не добавляем.
                 try:
-                    gname_s = normalize_case(r.get("group_name", ""))
+                    gname_raw_snap = r.get("group_name", "") or ""
                 except Exception:
-                    gname_s = ""
+                    gname_raw_snap = ""
+                disp_snap = ""
+                if gname_raw_snap and normalize_case(gname_raw_snap).lower() != "аренда оборудования":
+                    if "|" in gname_raw_snap:
+                        disp_snap = gname_raw_snap.split("|", 1)[1].strip()
+                    else:
+                        disp_snap = gname_raw_snap.strip()
                 display_name_snap = name_norm
-                if gname_s and gname_s not in ("", "аренда оборудования", name_norm.lower()):
-                    display_name_snap = f"{normalize_case(gname_s)}: {name_norm}"
+                # Добавляем префикс только если он задан и не совпадает с базовым именем
+                if disp_snap and normalize_case(disp_snap).lower() != name_norm.lower():
+                    display_name_snap = f"{normalize_case(disp_snap)}: {name_norm}"
                 vals = [
                     display_name_snap,
                     state,
@@ -1306,10 +1348,6 @@ def reload_zone_tabs(page: Any) -> None:
                 ]
                 for c, v in enumerate(vals):
                     item = QtWidgets.QTableWidgetItem(str(v))
-                    # Выравниваем текст по левому краю и по центру по вертикали.
-                    # Это устраняет возможные дополнительные отступы, которые
-                    # Qt может добавлять по умолчанию для разных режимов отображения.
-                    item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
                     if c == 0:
                         item.setData(QtCore.Qt.UserRole, item_id)
                     # Разрешаем редактирование только для кол-ва, коэффициента и цены (столбцы 2, 4, 5)
@@ -1645,18 +1683,17 @@ def reload_zone_tabs(page: Any) -> None:
                     if isinstance(raw_name, str):
                         # Заменяем любой пробельный символ на обычный пробел
                         raw_name = "".join(" " if ch.isspace() else ch for ch in raw_name)
-                    # Удаляем пробелы с обоих концов, а не только в начале,
-                    # чтобы избежать появления отступов и хвостовых пробелов
-                    base_name = str(raw_name).strip()
+                    base_name = str(raw_name).lstrip()
                 except Exception:
                     base_name = str(raw_name).lstrip() if raw_name else ""
                 try:
                     name_lower = base_name.lower()
                 except Exception:
                     name_lower = ""
-                # Если group_name присутствует, проверяем, начинается ли имя с префикса группы
-                # Например: имя = "Сцена: Панель", group_name = "Сцена". В таком случае
-                # удаляем префикс группы и двоеточие, чтобы base_name стал просто "Панель".
+                # Старый механизм удаления префикса группы больше не используется. Обнуляем gname_lower,
+                # чтобы пропустить удаление префикса на этом этапе — очистка выполняется ниже по новой логике.
+                gname_lower = ""
+                # Оставшийся код оставлен для совместимости, но всегда пропускается.
                 if gname_lower:
                     # Проверяем две возможные формы: без пробела и с пробелом перед двоеточием
                     prefix1 = f"{gname_lower}:"
@@ -1672,16 +1709,92 @@ def reload_zone_tabs(page: Any) -> None:
                             remainder = "".join(" " if ch.isspace() else ch for ch in remainder)
                             # удаляем ведущие двоеточие и пробелы
                             remainder = remainder.lstrip(" :")
-                            # Полностью убираем пробелы по краям оставшейся строки
-                            base_name = remainder.strip()
+                            base_name = remainder.lstrip()
                         except Exception:
                             base_name = base_name
                         name_lower = base_name.lower() if base_name else ""
                 display_name = base_name
-                # Если имя группы задано и отличается от базового имени, добавляем префикс.
-                # Пустые и служебные группы игнорируем. Сравнение в нижнем регистру.
-                if gname_lower and gname_lower not in ("", "аренда оборудования") and gname_lower != name_lower:
-                    display_name = f"{normalize_case(gname_stripped)}: {display_name}"
+                # Переопределяем логику группировки: используем скрытый id и отображаемое имя из group_name.
+                # Формат group_name: "<id>|<название>". Если такой формат отсутствует, используетя старый формат.
+                try:
+                    gval = rec.get("group_name", "") or ""
+                except Exception:
+                    gval = ""
+                # Очищаем форматные символы и пробелы
+                if isinstance(gval, str):
+                    tmp_chars2: list[str] = []
+                    for ch in gval:
+                        if unicodedata.category(ch) == "Cf":
+                            continue
+                        tmp_chars2.append(" " if ch.isspace() else ch)
+                    gval = "".join(tmp_chars2)
+                id_key2: str = ""
+                disp2: str = ""
+                if gval and normalize_case(gval).lower() != "аренда оборудования":
+                    if "|" in gval:
+                        parts2 = gval.split("|", 1)
+                        id_part2 = parts2[0].strip()
+                        disp_part2 = parts2[1].strip()
+                        if id_part2:
+                            id_key2 = id_part2
+                            disp2 = disp_part2
+                    else:
+                        disp2 = gval.strip()
+                        id_key2 = disp2
+                # Если id_key2 пуст, извлекаем префикс из имени (до двоеточия)
+                if not id_key2:
+                    prefix_candidate2 = ""
+                    try:
+                        nm_val2 = rec.get("name", "") or ""
+                    except Exception:
+                        nm_val2 = ""
+                    if isinstance(nm_val2, str):
+                        fchars2: list[str] = []
+                        for ch in nm_val2:
+                            if unicodedata.category(ch) == "Cf":
+                                continue
+                            fchars2.append(" " if ch.isspace() else ch)
+                        nm_clean2 = "".join(fchars2)
+                        nm_colon2 = (nm_clean2.replace("\uFF1A", ":").replace("\uFE55", ":").replace("\uA789", ":"))
+                        if ":" in nm_colon2:
+                            prefix_candidate2 = nm_colon2.split(":", 1)[0].strip()
+                    if prefix_candidate2:
+                        id_key2 = normalize_case(prefix_candidate2)
+                        disp2 = normalize_case(prefix_candidate2)
+                # назначаем цвет по id_key2
+                key_lower2 = ""
+                try:
+                    key_lower2 = id_key2.lower()
+                except Exception:
+                    key_lower2 = id_key2 or ""
+                if key_lower2 and key_lower2 not in ("", "аренда оборудования"):
+                    col2 = local_group_colors.get(key_lower2)
+                    if col2 is None:
+                        col2 = GROUP_COLOR_PALETTE[next_color_index % len(GROUP_COLOR_PALETTE)]
+                        local_group_colors[key_lower2] = col2
+                        next_color_index += 1
+                    group_color = col2
+                # Формируем display_name: если disp2 есть и base_name не начинается с него, добавляем
+                if disp2:
+                    # Удаляем префикс из base_name, если он уже присутствует
+                    try:
+                        bn_lower2 = base_name.lower()
+                    except Exception:
+                        bn_lower2 = base_name
+                    p1b = f"{disp2.lower()}:"
+                    p2b = f"{disp2.lower()} :"
+                    if bn_lower2.startswith(p1b) or bn_lower2.startswith(p2b):
+                        try:
+                            preflen2 = len(disp2)
+                            rem2 = base_name[preflen2:]
+                            rem2 = "".join(" " if ch.isspace() else ch for ch in rem2)
+                            rem2 = rem2.lstrip(" :")
+                            base_name = rem2.lstrip()
+                        except Exception:
+                            pass
+                    display_name = f"{normalize_case(disp2)}: {base_name}"
+                else:
+                    display_name = base_name
                 # Формируем список отображаемых значений
                 vals = [
                     display_name,
@@ -1713,15 +1826,8 @@ def reload_zone_tabs(page: Any) -> None:
                 total_amount += rec["amount_sum"]
         table.blockSignals(False)
         apply_auto_col_resize(table)
-        # Корректируем ширину вертикального заголовка после изменения данных,
-        # чтобы номера строк занимали фиксированное место. Это снижает
-        # визуальный «дрейф» текста между строками при разном количестве
-        # цифр в номерах строк.
-        # В прежних версиях использовалась функция ``_adjust_vheader_width``
-        # для принудительного изменения ширины вертикального заголовка. Она была
-        # удалена, поскольку приводила к чрезмерному увеличению высоты строк.
-        # Удаляем вызов, чтобы избежать подобных артефактов.
-        # _adjust_vheader_width(table)
+        # Зафиксируем ширину вертикального заголовка, чтобы предотвратить визуальные смещения
+        _fix_vertical_header_width(table)
     # Сумма зависит не только от фильтров, но и от выбранной зоны.
     # Определяем активную зону: индекс вкладки и соответствующий ключ.
     try:
@@ -3059,24 +3165,44 @@ def update_catalog_suggestions(page: Any) -> None:
 
 # 17. Обработка выбора позиции из каталога
 def on_catalog_item_selected(page: Any) -> None:
-    """
-    Deprecated callback for catalog item selection.
+    """Заполняет поля ручного добавления выбранной позицией из каталога.
 
-    In earlier versions this function populated manual‑add fields when a
-    user selected an entry from the catalog search combobox. The current
-    UI no longer uses this callback directly; instead the logic is
-    implemented within the catalog dialog itself. The function is kept
-    for backward compatibility and returns immediately.
+    После выбора позиции из списка подсказок наименование, цена,
+    класс, подрядчик, отдел и потребление подставляются в
+    соответствующие поля, причём редактирование цены и питания
+    блокируется до выхода из режима базы.
     """
-    # To maintain backward compatibility we simply return without doing
-    # anything. If invoked unexpectedly, log a debug message for
-    # diagnostics but do not raise exceptions.
+    # Если режим базы данных не активен или комбобокс поиска отсутствует — игнорируем выбор
+    if not getattr(page, "_db_mode_enabled", False) or not hasattr(page, "cmb_search_name"):
+        return
+    idx = page.cmb_search_name.currentIndex()
+    if idx < 0:
+        return
+    data = page.cmb_search_name.itemData(idx)
+    if not data:
+        return
+    row = data
     try:
-        if hasattr(page, '_log'):
-            page._log("on_catalog_item_selected called but this callback is deprecated and no longer performs any action.", "info")
-    except Exception:
-        pass
-    return
+        # Заполняем внутренние поля для последующего добавления
+        name_norm = normalize_case(row.get("name", ""))
+        vendor_norm = normalize_case(row.get("vendor", ""))
+        dept_norm = normalize_case(row.get("department", ""))
+        class_en = row.get("class", "equipment")
+        class_ru = CLASS_EN2RU.get(class_en, "Оборудование")
+        price = float(row.get("unit_price", 0.0) or 0.0)
+        power = float(row.get("power_watts", 0.0) or 0.0)
+        # Устанавливаем значения в скрытые поля
+        page.ed_add_name.setText(name_norm)
+        page.ed_add_vendor.setText(vendor_norm)
+        page.cmb_add_department.setEditText(dept_norm)
+        page.cmb_add_class.setCurrentText(class_ru)
+        page.sp_add_price.setValue(price)
+        page.sp_add_power.setValue(power)
+        # Блокируем редактирование цены и потребления на всякий случай
+        page.sp_add_price.setReadOnly(True)
+        page.sp_add_power.setReadOnly(True)
+    except Exception as ex:
+        page._log(f"Ошибка заполнения позиции каталога: {ex}", "error")
 
 
 # 18. Добавление позиции из каталога в смету
@@ -3421,56 +3547,9 @@ def show_catalog_dialog(page: Any) -> None:
                         # Сохраняем оригинальные данные в первом столбце
                         item.setData(QtCore.Qt.UserRole, dict(r))
                     self.tbl.setItem(row_idx, col, item)
-            # Планируем корректировку ширины колонок после отрисовки.
-            # Используем таймер с нулевой задержкой, чтобы дать Qt
-            # возможность вычислить фактическую ширину таблицы.
+            # Подстраиваем ширину колонок под содержимое
             try:
-                QtCore.QTimer.singleShot(0, self._adjust_column_widths)
-            except Exception:
-                pass
-
-        def _adjust_column_widths(self) -> None:
-            """
-            Делит доступную ширину таблицы так, чтобы колонка
-            «Наименование» была шире остальных (около 3 единиц),
-            а оставшееся пространство распределялось поровну.
-            В случае ошибок просто игнорирует настройку.
-            """
-            try:
-                ncols = self.tbl.columnCount()
-                if ncols <= 1:
-                    return
-                total_width = self.tbl.viewport().width()
-                if total_width <= 0:
-                    total_width = self.tbl.width()
-                # 3 единицы на первую колонку, по 1 на остальные
-                units = 3 + (ncols - 1)
-                name_width = int(total_width * 3 / units)
-                remain = max(total_width - name_width, 0)
-                other_width = int(remain / (ncols - 1)) if (ncols - 1) > 0 else 0
-                header = self.tbl.horizontalHeader()
-                header.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
-                header.resizeSection(0, name_width)
-                for i in range(1, ncols):
-                    header.resizeSection(i, other_width)
-            except Exception:
-                pass
-
-        def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore
-            """
-            При изменении размера окна диалога перераспределяет
-            ширину столбцов, чтобы колонка «Наименование» оставалась
-            пропорционально самой широкой. Использует отложенный вызов
-            через ``QTimer.singleShot``, чтобы дождаться применения новой
-            геометрии.
-            """
-            # Вызываем родительский обработчик для стандартной логики
-            try:
-                super().resizeEvent(event)
-            except Exception:
-                pass
-            try:
-                QtCore.QTimer.singleShot(0, self._adjust_column_widths)
+                self.tbl.resizeColumnsToContents()
             except Exception:
                 pass
 
@@ -5473,26 +5552,110 @@ def open_column_master(page: Any) -> None:
 
 
 def edit_selected_screen(page: Any) -> None:
-    """
-    Deprecated handler for editing a selected LED screen.
+    """Редактирует выбранный экран и связанные с ним позиции (витая пара, видеопроцессор).
 
-    In older versions this function opened a detailed wizard to edit the
-    dimensions, resolution and pricing of a selected LED screen along
-    with associated items like twisted pair cables and video processors.
-    The current application flow no longer provides in‑place editing of
-    screens via this function. The handler is retained for backward
-    compatibility but performs no actions. To edit screens users should
-    delete the old entry and add a new one via the master dialog.
+    Пользователь должен предварительно выделить строку в таблице сводной сметы,
+    содержащую экран (наименование начинается с «LED экран»). Функция извлекает
+    исходные параметры экрана (ширина, высота, разрешение модуля, цена за м²,
+    подрядчик, отдел) из имени и таблицы, затем открывает диалог мастера с
+    этими значениями. После изменения параметры записываются обратно в
+    соответствующие строки таблицы «items» проекта, а также корректируются
+    связанные записи витой пары и видеопроцессора. При отключении
+    соответствующих чекбоксов в диалоге такие позиции будут удалены.
     """
-    # Emit a debug log indicating that editing a selected screen is no
-    # longer supported via this stub. We do not remove the function
-    # entirely to avoid breaking external imports.
+    # 21.1 Проверяем выбор проекта
+    if getattr(page, "project_id", None) is None:
+        QtWidgets.QMessageBox.information(page, "Внимание", "Сначала откройте проект.")
+        return
+    # 21.2 Находим выбранную строку в таблицах зон
+    selected_info = None
+    for zone_val, tbl in page.zone_tables.items():
+        sel = tbl.selectionModel() if tbl else None
+        if sel and sel.hasSelection():
+            rows = sel.selectedRows()
+            if rows:
+                row_idx = rows[0].row()
+                # Собираем данные: название, цена, vendor, dept, zone
+                name = tbl.item(row_idx, 0).text() if tbl.item(row_idx, 0) else ""
+                price_txt = tbl.item(row_idx, 3).text() if tbl.item(row_idx, 3) else ""
+                vendor = tbl.item(row_idx, 5).text() if tbl.item(row_idx, 5) else ""
+                department = tbl.item(row_idx, 6).text() if tbl.item(row_idx, 6) else ""
+                # Определяем зону ("Без зоны" -> "")
+                zone_name = tbl.item(row_idx, 7).text() if tbl.item(row_idx, 7) else ""
+                zone = "" if not zone_name or zone_name.lower() in {"без зоны", "<пусто>"} else zone_name.strip()
+                selected_info = (name, price_txt, vendor, department, zone)
+                break
+    if not selected_info:
+        QtWidgets.QMessageBox.information(page, "Редактирование", "Выберите экран для редактирования.")
+        return
+    name, price_txt, vendor_old, dept_old, zone_old = selected_info
+    # 21.3 Проверяем, является ли выбранный элемент экраном
+    if not name.lower().startswith("led экран"):
+        QtWidgets.QMessageBox.information(page, "Редактирование", "Выбранная позиция не является экраном.")
+        return
+    import re
+    import math
+    # 21.4 Извлекаем размеры и разрешение из имени
+    pattern = r"LED экран ([0-9]+(?:\.[0-9]+)?)×([0-9]+(?:\.[0-9]+)?) м \((\d+) кабинетов, (\d+)×(\d+) пикселей\)"
+    m = re.match(pattern, name)
+    if not m:
+        QtWidgets.QMessageBox.information(page, "Редактирование", "Не удалось распарсить параметры экрана.")
+        return
     try:
-        if hasattr(page, '_log'):
-            page._log("edit_selected_screen called but this feature has been deprecated. Use the master dialog to add or adjust screens.", "info")
+        width = float(m.group(1))
+        height = float(m.group(2))
+        cabinets_old = int(m.group(3))
+        res_x_old = int(m.group(4))
+        res_y_old = int(m.group(5))
     except Exception:
-        pass
-    return
+        QtWidgets.QMessageBox.information(page, "Редактирование", "Ошибка разбора параметров экрана.")
+        return
+    # 21.5 Вычисляем разрешение модуля из старых параметров
+    cab_w_old = max(1, math.ceil(width * 2))
+    cab_h_old = max(1, math.ceil(height * 2))
+    mod_px_w = int(res_x_old / cab_w_old)
+    mod_px_h = int(res_y_old / cab_h_old)
+    # 21.6 Цена за м² (unit_price) - преобразуем
+    try:
+        price_per_m2 = to_float(price_txt, 0.0)
+    except Exception:
+        price_per_m2 = 0.0
+    # 21.7 Определяем наличие витой пары и видеопроцессора
+    has_cable = False
+    has_vp = False
+    try:
+        cur = page.db._conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM items WHERE project_id=? AND name LIKE ? AND LOWER(COALESCE(vendor,''))=LOWER(?) AND LOWER(COALESCE(zone,''))=LOWER(?)",
+            (page.project_id, "Витая пара для LED%", vendor_old, zone_old or ""),
+        )
+        has_cable = cur.fetchone()[0] > 0
+        cur.execute(
+            "SELECT COUNT(*) FROM items WHERE project_id=? AND name LIKE ? AND LOWER(COALESCE(vendor,''))=LOWER(?) AND LOWER(COALESCE(zone,''))=LOWER(?)",
+            (page.project_id, "Видеопроцессор для LED%", vendor_old, zone_old or ""),
+        )
+        has_vp = cur.fetchone()[0] > 0
+    except Exception:
+        has_cable = False
+        has_vp = False
+    # 21.8 Запускаем диалог мастера с предзаполненными значениями
+    dlg = open_screen_master.__globals__["ScreenMasterDialog"](page)  # type: ignore
+    dlg.ed_width.setValue(width)
+    dlg.ed_height.setValue(height)
+    dlg.spin_mod_w.setValue(mod_px_w)
+    dlg.spin_mod_h.setValue(mod_px_h)
+    dlg.spin_price.setValue(price_per_m2)
+    # Устанавливаем подрядчика и отдел
+    def set_combo(combo: QtWidgets.QComboBox, text: str) -> None:
+        if not text:
+            return
+        for i in range(combo.count()):
+            if combo.itemText(i).lower() == text.lower():
+                combo.setCurrentIndex(i)
+                return
+        combo.addItem(text)
+        combo.setCurrentIndex(combo.count() - 1)
+    set_combo(dlg.cmb_vendor, vendor_old)
     set_combo(dlg.cmb_department, dept_old)
     dlg.chk_cable.setChecked(has_cable)
     dlg.chk_vp.setChecked(has_vp)
