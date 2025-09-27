@@ -627,7 +627,14 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     except Exception:
         logger.error("Не удалось добавить метод refresh_export_tab_snapshots в объект страницы", exc_info=True)
 
-    for w in (chk_logo, frame_logo_img, chk_compare, cmb_snap):
+    # Создаём элементы для пользовательской строки в оглавлении. Пользователь
+    # может ввести любую подпись, которая будет отображаться в заголовке PDF.
+    lbl_custom_title = QtWidgets.QLabel("Дополнительная строка в оглавление:")
+    edt_custom_title = QtWidgets.QLineEdit()
+    edt_custom_title.setPlaceholderText("Введите подпись или заголовок")
+    # Добавляем виджеты в общую раскладку. Важен порядок: сначала логотип и
+    # сравнение, затем снимок, а затем поле пользовательского заголовка.
+    for w in (chk_logo, frame_logo_img, chk_compare, cmb_snap, lbl_custom_title, edt_custom_title):
         common_layout.addWidget(w)
     vbox.addWidget(common_frame)
 
@@ -751,6 +758,17 @@ def build_export_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                 "compare_mode": chk_compare.isChecked(),
                 # Передаём путь к файлу снимка, если выбран
                 "snapshot": snap_path,
+                # Пользовательская строка для оглавления. Если поле пустое, будет
+                # проигнорировано при генерации PDF.
+                # Читаем значение пользовательской строки. Если объект недоступен
+                # (например, поле не создано), используем пустую строку, чтобы
+                # при генерации PDF дополнительный заголовок не выводился.
+                # Пользовательская строка для оглавления. Если чтение поля
+                # вызывает исключение (например, поле ещё не создано),
+                # возвращаем пустую строку.
+                "custom_title": (  # type: ignore
+                    (edt_custom_title.text().strip() if hasattr(edt_custom_title, "text") else "")
+                ),
             },
         }
         return opts
@@ -1073,8 +1091,10 @@ def generate_pdf(
         normal_style.fontName = "DejaVuSans"
         header_style = styles["Heading1"].clone("ruHeader")
         header_style.fontName = "DejaVuSans-Bold"
-        header_style.fontSize = 16
-        header_style.leading = 20
+        # Устанавливаем крупный размер шрифта и межстрочный интервал для заголовков.
+        # Это обеспечивает, что пользовательская строка и основной заголовок будут одного размера.
+        header_style.fontSize = 18
+        header_style.leading = 22
 
         # Добавляем логотип, если указан
         common_opts = options.get("common", {})
@@ -1091,6 +1111,18 @@ def generate_pdf(
 
         # Заголовок
         elements.append(Paragraph(report_type, header_style))
+        # Вставляем пользовательскую строку в оглавление (если указана)
+        try:
+            custom_title: Optional[str] = None
+            if isinstance(common_opts, dict):
+                custom_title = common_opts.get("custom_title") or None
+            if custom_title:
+                # Добавляем пользовательский заголовок отдельным параграфом.
+                # Используем тот же стиль, что и для основного заголовка, чтобы размеры совпадали.
+                elements.append(Paragraph(str(custom_title), header_style))
+        except Exception:
+            # Не прерываем создание PDF, просто логируем ошибку
+            logger.error("Ошибка добавления пользовательского заголовка", exc_info=True)
         elements.append(Spacer(1, 4 * mm))
 
         # Подготовка данных для отчёта.
@@ -2853,6 +2885,74 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                 elements.append(Paragraph(f"Итого расходы: {total_expense:,.2f} ₽".replace(",", " "), header_style))
                 elements.append(Paragraph(f"Чистая прибыль: {net_profit:,.2f} ₽".replace(",", " "), header_style))
                 elements.append(Spacer(1, 4 * mm))
+                # 3.3.4 Таблица: сколько нужно собрать денег у каждого подрядчика
+                # Суммируем все доходы по подрядчикам (из income_rows), получая общую
+                # сумму к сбору для каждого подрядчика. Выводим её отдельной таблицей.
+                try:
+                    vendor_income_sum: Dict[str, float] = {}
+                    for _v_name, _desc, amt_val in income_rows:
+                        try:
+                            key = _v_name or "(без подрядчика)"
+                            vendor_income_sum[key] = vendor_income_sum.get(key, 0.0) + float(amt_val)
+                        except Exception:
+                            continue
+                    if vendor_income_sum:
+                        elements.append(Paragraph(
+                            "Сколько нужно собрать денег у каждого подрядчика",
+                            header_style,
+                        ))
+                        elements.append(Spacer(1, 1 * mm))
+                        table_data: List[List[str]] = [["Подрядчик", "Сумма ₽"]]
+                        for vn in sorted(vendor_income_sum.keys()):
+                            amt_val = vendor_income_sum[vn]
+                            table_data.append([
+                                vn,
+                                f"{amt_val:,.2f}".replace(",", " "),
+                            ])
+                        try:
+                            from reportlab.platypus import Table as LocalTable, TableStyle as LocalTableStyle  # type: ignore
+                            # Ширины столбцов: рассчитываем на основе доступной ширины страницы
+                            try:
+                                page_width_pts = max(A4[0], A4[1])
+                            except Exception:
+                                page_width_pts = A4[0]
+                            available_width_mm = (page_width_pts - 2 * 15 * mm) / mm  # type: ignore
+                            base_widths = [100.0, 40.0]
+                            total_base = sum(base_widths) or 1.0
+                            scale = available_width_mm / total_base
+                            col_widths_mm = [w * scale for w in base_widths]
+                            tbl_collect = LocalTable(
+                                table_data,
+                                repeatRows=1,
+                                colWidths=[w * mm for w in col_widths_mm],
+                            )
+                        except Exception:
+                            tbl_collect = LocalTable(table_data, repeatRows=1, colWidths=[100 * mm, 40 * mm])  # type: ignore
+                        try:
+                            tbl_collect.setStyle(LocalTableStyle([
+                                ('FONTNAME', (0, 0), (-1, -1), 'DejaVuSans'),
+                                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                                ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
+                                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                                ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+                            ]))
+                            elements.append(tbl_collect)
+                        except Exception:
+                            elements.append(Paragraph(
+                                "(Не удалось построить таблицу сбора средств)",
+                                normal_style,
+                            ))
+                        elements.append(Spacer(1, 4 * mm))
+                except Exception:
+                    # Логируем ошибку построения таблицы и продолжаем
+                    logger.error(
+                        "Ошибка построения таблицы итогов по подрядчикам во внутреннем отчёте",
+                        exc_info=True,
+                    )
                 return elements
             except Exception:
                 # В случае ошибки при построении внутреннего отчёта логируем и возвращаем сообщение
