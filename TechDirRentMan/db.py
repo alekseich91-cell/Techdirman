@@ -127,6 +127,19 @@ if True:
                 "ALTER TABLE projects ADD COLUMN finance_json TEXT;"
             )
 
+            # 2.2.2c Столбец статуса проекта
+            # Новое поле 'status' определяет текущий статус проекта. Мы
+            # используем значение по умолчанию 'Тестовый', чтобы все
+            # существующие проекты считались тестовыми до явного выбора
+            # пользователем. Значение NOT NULL обеспечивает, что каждая
+            # запись имеет корректный статус, даже если сохранение в БД
+            # выполняется старым кодом без обновления этого поля.
+            self._ensure_column(
+                "projects",
+                "status",
+                "ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'Тестовый';"
+            )
+
             # 2.2.3 Индексы по новым столбцам (создаём только после ensure_column)
             self._ensure_index("idx_items_batch",      "CREATE INDEX IF NOT EXISTS idx_items_batch ON items(import_batch);")
             self._ensure_index("idx_items_vendor",     "CREATE INDEX IF NOT EXISTS idx_items_vendor ON items(vendor);")
@@ -169,10 +182,39 @@ if True:
             return cur.lastrowid
 
         def list_projects(self):
-            """Возвращает проекты в порядке создания (новые сверху)."""
+            """
+            Возвращает проекты в порядке создания (новые сверху).
+
+            Поле 'status' также доступно в возвращаемых строках для
+            последующего использования в пользовательском интерфейсе.
+            """
             cur = self._conn.cursor()
             cur.execute("SELECT * FROM projects ORDER BY created_at DESC")
             return cur.fetchall()
+
+        def get_project_status(self, project_id: int) -> Optional[str]:
+            """
+            Возвращает статус проекта по идентификатору. Если проект не
+            найден, возвращает None.
+
+            :param project_id: идентификатор проекта
+            :return: строка статуса или None
+            """
+            cur = self._conn.cursor()
+            cur.execute("SELECT status FROM projects WHERE id=?", (project_id,))
+            row = cur.fetchone()
+            return None if row is None else row[0]
+
+        def set_project_status(self, project_id: int, status: str) -> None:
+            """
+            Обновляет статус проекта в таблице projects.
+
+            :param project_id: идентификатор проекта
+            :param status: новый статус ('В работе', 'Завершен', 'Тестовый', 'Резерв')
+            """
+            cur = self._conn.cursor()
+            cur.execute("UPDATE projects SET status=? WHERE id=?", (status, project_id))
+            self._conn.commit()
 
         def delete_project(self, project_id: int):
             """Удаляет проект по идентификатору."""

@@ -162,10 +162,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # 6.12 Операции с проектами
     def reload_projects(self):
+        """
+        Перезагружает список проектов. Помимо названия и даты создания
+        окрашивает элементы списка в зависимости от статуса проекта:
+            • «В работе»  → красный цвет
+            • «Завершен» → зелёный цвет
+            • «Резерв»   → синий цвет
+            • «Тестовый»→ системный цвет (по умолчанию)
+        """
         self.list_projects.clear()
+        # Получаем все проекты; столбец 'status' добавлен в схему
         for r in self.db.list_projects():
-            it = QtWidgets.QListWidgetItem(f"{r['name']}  ({r['created_at']})")
+            name = r["name"]
+            created_at = r["created_at"]
+            status = r["status"] if "status" in r.keys() else None
+            it = QtWidgets.QListWidgetItem(f"{name}  ({created_at})")
             it.setData(QtCore.Qt.UserRole, r["id"])
+            try:
+                col = None
+                if status == "В работе":
+                    col = QtGui.QColor("red")
+                elif status == "Завершен":
+                    col = QtGui.QColor("green")
+                elif status == "Резерв":
+                    col = QtGui.QColor("blue")
+                if col is not None:
+                    it.setForeground(col)
+            except Exception:
+                pass
             self.list_projects.addItem(it)
 
     def create_project(self):

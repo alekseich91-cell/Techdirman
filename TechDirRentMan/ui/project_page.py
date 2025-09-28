@@ -737,7 +737,21 @@ class ProjectPage(QtWidgets.QWidget):
         self.project_name = project_name
         self.cover_label.set_project_id(self.project_id)
 
+        # 8.a Загружаем информацию из JSON (название, даты и др.)
         self._load_info_json()
+        # 8.b Устанавливаем статус проекта в комбобоксе на вкладке «Информация»
+        try:
+            status = None
+            if hasattr(self.db, "get_project_status"):
+                status = self.db.get_project_status(project_id)
+            if status and hasattr(self, "ed_status"):
+                idx = self.ed_status.findText(status)
+                if idx >= 0:
+                    self.ed_status.blockSignals(True)
+                    self.ed_status.setCurrentIndex(idx)
+                    self.ed_status.blockSignals(False)
+        except Exception as ex:
+            self._log(f"Ошибка установки статуса проекта: {ex}", "error")
 
         self.cmb_f_vendor.blockSignals(True)
         self.cmb_f_department.blockSignals(True)

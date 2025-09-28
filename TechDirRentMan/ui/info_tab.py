@@ -116,6 +116,14 @@ def build_info_tab(page: Any, tab: QtWidgets.QWidget) -> None:
     page.ed_power_capacity = ex(QtWidgets.QLineEdit())
     page.ed_storage_possible = ex(QtWidgets.QLineEdit())
 
+    # Статус проекта: комбобокс с предопределёнными значениями
+    # Выбор статуса позволяет задавать состояние проекта (в работе,
+    # завершён, тестовый или резерв). По изменению статуса
+    # выполняется обновление цвета в списке проектов и запись
+    # в базу данных.
+    page.ed_status = ex(QtWidgets.QComboBox())
+    page.ed_status.addItems(["В работе", "Завершен", "Тестовый", "Резерв"])
+
     # Многострочное поле комментариев
     page.ed_comments = QtWidgets.QTextEdit()
     page.ed_comments.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -146,10 +154,48 @@ def build_info_tab(page: Any, tab: QtWidgets.QWidget) -> None:
         ("Этаж и наличие лифта:", page.ed_floor_elevator),
         ("Количество электричества на площадке:", page.ed_power_capacity),
         ("Возможность складирования кофров:", page.ed_storage_possible),
+        ("Статус проекта:", page.ed_status),
         ("Комментарии:", page.ed_comments),
     ]:
         form.addRow(label, w)
     form.addRow(page.btn_save_info)
+
+    # 2.b Обработчик изменения статуса проекта
+    def on_status_changed() -> None:
+        """
+        Обновляет статус проекта в БД и перекрашивает название проекта в
+        списке MainWindow. При отсутствии project_id (черновик) или
+        ошибки обновление игнорируется.
+        """
+        try:
+            status = page.ed_status.currentText()
+            pid = getattr(page, "project_id", None)
+            db = getattr(page, "db", None)
+            if pid is None or db is None:
+                return
+            # Обновляем статус в БД
+            if hasattr(db, "set_project_status"):
+                db.set_project_status(pid, status)
+            # Находим главное окно, чтобы обновить список проектов и сохранить выбор
+            win = page.window()
+            if isinstance(win, QtWidgets.QMainWindow) and hasattr(win, "reload_projects"):
+                current_pid = pid
+                win.reload_projects()
+                # после перезагрузки выбираем элемент с тем же id
+                for i in range(win.list_projects.count()):
+                    item = win.list_projects.item(i)
+                    if item and item.data(QtCore.Qt.UserRole) == current_pid:
+                        win.list_projects.setCurrentRow(i)
+                        break
+        except Exception:
+            # Логируем ошибку, но не прерываем работу
+            logger.error("Ошибка обновления статуса проекта", exc_info=True)
+
+    # Подключаем обработчик к изменению статуса
+    try:
+        page.ed_status.currentIndexChanged.connect(on_status_changed)
+    except Exception:
+        logger.error("Не удалось подключить обработчик изменения статуса", exc_info=True)
 
     # Скролл слева: позволяет прокручивать форму
     left_scroll = QtWidgets.QScrollArea()

@@ -3098,12 +3098,10 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                         from .finance_tab import DBDataProvider  # type: ignore
                         prov = DBDataProvider(page)
                         items_for_sum = prov.load_items() or []
-                    # Подсчёт сумм и налогов по каждой паре зона–подрядчик
-                    zone_vendor_sum: Dict[Tuple[str, str], float] = {}
-                    zone_vendor_tax: Dict[Tuple[str, str], Tuple[float, float]] = {}
+                    # Накапливаем суммы по классам (equipment/other) для каждой пары зона–подрядчик
+                    zone_vendor_data: Dict[Tuple[str, str], Dict[str, float]] = {}
                     for it in items_for_sum:
                         try:
-                            # Рассчитываем эффективный коэффициент для equipment, аналогично основному отчёту
                             eff: Optional[float] = None
                             if ft:
                                 v_name = it.vendor or ""
@@ -3119,50 +3117,92 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             zone_name = (it.zone or "Без зоны").strip() or "Без зоны"
                             vendor_name = (it.vendor or "").strip()
                             key = (zone_name, vendor_name)
-                            zone_vendor_sum[key] = zone_vendor_sum.get(key, 0.0) + amt
-                            # Налог для каждой позиции рассчитываем по ставке клиента
-                            client_tax_pct = 0.0
-                            try:
-                                if ft and hasattr(ft, "preview_tax_pct"):
-                                    client_tax_pct = float(ft.preview_tax_pct.get(it.vendor or "", 0.0)) / 100.0  # type: ignore
-                            except Exception:
-                                client_tax_pct = 0.0
-                            tax_amt = amt * client_tax_pct
-                            prev_tax, prev_sum_tax = zone_vendor_tax.get(key, (0.0, 0.0))
-                            zone_vendor_tax[key] = (prev_tax + tax_amt, prev_sum_tax + amt + tax_amt)
+                            data = zone_vendor_data.setdefault(key, {"equip_sum": 0.0, "other_sum": 0.0})
+                            if getattr(it, "cls", None) == "equipment":
+                                data["equip_sum"] += amt
+                            else:
+                                data["other_sum"] += amt
                         except Exception:
                             continue
-                    if zone_vendor_sum:
+                    # Рассчитываем поток клиента для каждой пары зона–подрядчик
+                    zone_vendor_flow: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
+                    for (zn, vn), sums_dict in zone_vendor_data.items():
+                        eq_sum = sums_dict.get("equip_sum", 0.0)
+                        oth_sum = sums_dict.get("other_sum", 0.0)
+                        # Определяем ставки скидки, комиссии и налога для подрядчика.
+                        discount_pct = 0.0
+                        commission_pct = 0.0
+                        tax_pct = 0.0
+                        if ft:
+                            try:
+                                from .finance_tab import VendorSettings  # type: ignore
+                            except Exception:
+                                class VendorSettings:  # type: ignore
+                                    discount_pct = 0.0
+                                    commission_pct = 0.0
+                                    tax_pct = 0.0
+                            try:
+                                discount_pct = ft.preview_discount_pct.get(
+                                    vn,
+                                    ft.vendors_settings.get(vn, VendorSettings()).discount_pct,  # type: ignore[attr-defined]
+                                )
+                                commission_pct = ft.preview_commission_pct.get(
+                                    vn,
+                                    ft.vendors_settings.get(vn, VendorSettings()).commission_pct,  # type: ignore[attr-defined]
+                                )
+                                tax_pct = ft.preview_tax_pct.get(
+                                    vn,
+                                    ft.vendors_settings.get(vn, VendorSettings()).tax_pct,  # type: ignore[attr-defined]
+                                )
+                            except Exception:
+                                try:
+                                    vs = VendorSettings()  # type: ignore
+                                    discount_pct = getattr(vs, 'discount_pct', 0.0)
+                                    commission_pct = getattr(vs, 'commission_pct', 0.0)
+                                    tax_pct = getattr(vs, 'tax_pct', 0.0)
+                                except Exception:
+                                    discount_pct = commission_pct = tax_pct = 0.0
+                        if compute_client_flow:
+                            try:
+                                _, _, tax_amt, subtotal, total_with_tax = compute_client_flow(
+                                    eq_sum,
+                                    oth_sum,
+                                    discount_pct,
+                                    commission_pct,
+                                    tax_pct,
+                                )
+                            except Exception:
+                                tax_amt = 0.0
+                                subtotal = eq_sum + oth_sum
+                                total_with_tax = subtotal
+                        else:
+                            tax_amt = 0.0
+                            subtotal = eq_sum + oth_sum
+                            total_with_tax = subtotal
+                        zone_vendor_flow[(zn, vn)] = (subtotal, tax_amt, total_with_tax)
+                    if zone_vendor_flow:
                         elements.append(Paragraph("Итоги по зонам", header_style))
-                        # Собираем список уникальных зон
-                        zone_list = sorted(set([k[0] for k in zone_vendor_sum.keys()]))
+                        zone_list = sorted(set([k[0] for k in zone_vendor_flow.keys()]))
                         for zn in zone_list:
-                            # Отображаем имя зоны: используем пользовательское название для пустой зоны
                             zone_display = no_zone_label if (not zn or zn.strip() == "Без зоны") else zn
-                            # Заголовок зоны
                             elements.append(Paragraph(f"{zone_display}", header_style))
                             elements.append(Spacer(1, 1 * mm))
                             header_row = ["Подрядчик", "Сумма", "Налог", "Сумма с налогом"]
                             zone_data: List[List[str]] = [header_row]
                             zone_row_colors: List[Optional[Any]] = []
-                            # Список подрядчиков в зоне, отсортированный по имени
-                            vendors_for_zone = sorted([k[1] for k in zone_vendor_sum.keys() if k[0] == zn])
+                            vendors_for_zone = sorted([k[1] for k in zone_vendor_flow.keys() if k[0] == zn])
                             for vn in vendors_for_zone:
-                                amt = zone_vendor_sum.get((zn, vn), 0.0)
-                                tax_amt, sum_taxed = zone_vendor_tax.get((zn, vn), (0.0, amt))
-                                # Дельта по снимку для пары зона–подрядчик не рассчитывается,
-                                # так как снимок таких данных не содержит
+                                subtotal, tax_amt, total_with_tax = zone_vendor_flow.get((zn, vn), (0.0, 0.0, 0.0))
                                 diff_str = ""
                                 color: Optional[Any] = None
                                 row = [
                                     vn or "(без подрядчика)",
-                                    f"{amt:,.2f}".replace(",", " "),
+                                    f"{subtotal:,.2f}".replace(",", " "),
                                     f"{tax_amt:,.2f}".replace(",", " "),
-                                    f"{sum_taxed:,.2f}".replace(",", " ") + diff_str,
+                                    f"{total_with_tax:,.2f}".replace(",", " ") + diff_str,
                                 ]
                                 zone_data.append(row)
                                 zone_row_colors.append(color)
-                            # Формируем таблицу для зоны
                             ncols = len(header_row)
                             col_widths = [FIN_TABLE_WIDTH_MM / max(ncols, 1) * mm] * ncols
                             tbl = Table(zone_data, repeatRows=1, colWidths=col_widths)
@@ -3180,7 +3220,6 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             elements.append(Spacer(1, 2 * mm))
                         return elements
                 except Exception:
-                    # Логируем ошибку и возвращаем сообщение об ошибке
                     logger.error("Ошибка формирования итогов по зонам и подрядчикам", exc_info=True)
                     elements.append(Paragraph("Ошибка формирования итогов по зонам и подрядчикам", normal_style))
                     return elements
@@ -3194,54 +3233,111 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                     from .finance_tab import DBDataProvider  # type: ignore
                     prov = DBDataProvider(page)
                     items_for_sum = prov.load_items() or []
-                # Подсчёт сумм и налогов по зонам
-                summary_zone: Dict[str, float] = {}
-                summary_zone_tax: Dict[str, Tuple[float, float]] = {}
-                total_project = 0.0
+                # Накапливаем суммы по каждой паре зона–подрядчик
+                zone_vendor_data: Dict[Tuple[str, str], Dict[str, float]] = {}
                 for it in items_for_sum:
                     try:
                         eff: Optional[float] = None
                         if ft:
-                            v = it.vendor or ""
+                            v_name = it.vendor or ""
                             if it.cls == "equipment":
-                                if ft.preview_coeff_enabled.get(v, True):
-                                    eff = float(ft._coeff_user_values.get(v, ft.preview_vendor_coeffs.get(v, 1.0)))
+                                if ft.preview_coeff_enabled.get(v_name, True):
+                                    eff = float(ft._coeff_user_values.get(v_name, ft.preview_vendor_coeffs.get(v_name, 1.0)))
                                 else:
                                     if getattr(it, "original_coeff", None) is not None:
                                         eff = float(getattr(it, "original_coeff"))
                                     else:
                                         eff = None
                         amt = float(it.amount(effective_coeff=eff))
-                        total_project += amt
                         zone_name = (it.zone or "Без зоны").strip() or "Без зоны"
-                        summary_zone[zone_name] = summary_zone.get(zone_name, 0.0) + amt
-                        # Налог для каждой позиции рассчитываем по ставке клиента
-                        client_tax_pct = 0.0
-                        try:
-                            if ft and hasattr(ft, "preview_tax_pct"):
-                                client_tax_pct = float(ft.preview_tax_pct.get(it.vendor or "", 0.0)) / 100.0  # type: ignore
-                        except Exception:
-                            client_tax_pct = 0.0
-                        tax_amt = amt * client_tax_pct
-                        prev_tax, prev_sum_tax = summary_zone_tax.get(zone_name, (0.0, 0.0))
-                        summary_zone_tax[zone_name] = (prev_tax + tax_amt, prev_sum_tax + amt + tax_amt)
+                        vendor_name = (it.vendor or "").strip()
+                        key = (zone_name, vendor_name)
+                        data = zone_vendor_data.setdefault(key, {"equip_sum": 0.0, "other_sum": 0.0})
+                        if getattr(it, "cls", None) == "equipment":
+                            data["equip_sum"] += amt
+                        else:
+                            data["other_sum"] += amt
                     except Exception:
                         continue
-                # Строим таблицу «Итоги по зонам» (без разбивки по подрядчикам)
-                if summary_zone:
+                # Рассчитываем поток клиента для каждой пары зона–подрядчик
+                zone_vendor_flow: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
+                for (zn, vn), sums_dict in zone_vendor_data.items():
+                    eq_sum = sums_dict.get("equip_sum", 0.0)
+                    oth_sum = sums_dict.get("other_sum", 0.0)
+                    # Определяем ставки скидки, комиссии и налога для подрядчика.
+                    discount_pct = 0.0
+                    commission_pct = 0.0
+                    tax_pct = 0.0
+                    if ft:
+                        try:
+                            from .finance_tab import VendorSettings  # type: ignore
+                        except Exception:
+                            class VendorSettings:  # type: ignore
+                                discount_pct = 0.0
+                                commission_pct = 0.0
+                                tax_pct = 0.0
+                        try:
+                            discount_pct = ft.preview_discount_pct.get(
+                                vn,
+                                ft.vendors_settings.get(vn, VendorSettings()).discount_pct,  # type: ignore[attr-defined]
+                            )
+                            commission_pct = ft.preview_commission_pct.get(
+                                vn,
+                                ft.vendors_settings.get(vn, VendorSettings()).commission_pct,  # type: ignore[attr-defined]
+                            )
+                            tax_pct = ft.preview_tax_pct.get(
+                                vn,
+                                ft.vendors_settings.get(vn, VendorSettings()).tax_pct,  # type: ignore[attr-defined]
+                            )
+                        except Exception:
+                            try:
+                                vs = VendorSettings()  # type: ignore
+                                discount_pct = getattr(vs, 'discount_pct', 0.0)
+                                commission_pct = getattr(vs, 'commission_pct', 0.0)
+                                tax_pct = getattr(vs, 'tax_pct', 0.0)
+                            except Exception:
+                                discount_pct = commission_pct = tax_pct = 0.0
+                    if compute_client_flow:
+                        try:
+                            _, _, tax_amt, subtotal, total_with_tax = compute_client_flow(
+                                eq_sum,
+                                oth_sum,
+                                discount_pct,
+                                commission_pct,
+                                tax_pct,
+                            )
+                        except Exception:
+                            tax_amt = 0.0
+                            subtotal = eq_sum + oth_sum
+                            total_with_tax = subtotal
+                    else:
+                        tax_amt = 0.0
+                        subtotal = eq_sum + oth_sum
+                        total_with_tax = subtotal
+                    zone_vendor_flow[(zn, vn)] = (subtotal, tax_amt, total_with_tax)
+                # Агрегируем по зонам без разбивки по подрядчикам
+                summary_zone_flow: Dict[str, Dict[str, float]] = {}
+                for (zn, vn), (subtotal, tax_amt, total_with_tax) in zone_vendor_flow.items():
+                    data = summary_zone_flow.setdefault(zn, {"subtotal": 0.0, "tax": 0.0, "total": 0.0})
+                    data["subtotal"] += subtotal
+                    data["tax"] += tax_amt
+                    data["total"] += total_with_tax
+                if summary_zone_flow:
                     elements.append(Paragraph("Итоги по зонам", header_style))
                     header = ["Зона", "Сумма", "Налог", "Сумма с налогом"]
                     zone_data: List[List[str]] = [header]
                     zone_row_colors: List[Optional[Any]] = []
-                    for z, amt in sorted(summary_zone.items()):
-                        tax_amt, sum_taxed = summary_zone_tax.get(z, (0.0, amt))
+                    for z, flows in sorted(summary_zone_flow.items()):
+                        subtotal = flows.get("subtotal", 0.0)
+                        tax_amt = flows.get("tax", 0.0)
+                        total_with_tax = flows.get("total", 0.0)
                         diff_val: Optional[float] = None
                         color: Optional[Any] = None
                         diff_str = ""
                         if fin_snapshot:
                             try:
                                 snap_total = snap_zones.get(z)  # type: ignore[name-defined]
-                                curr_total = float(sum_taxed)
+                                curr_total = float(total_with_tax)
                                 if snap_total is None:
                                     diff_val = curr_total
                                 else:
@@ -3254,21 +3350,18 @@ def _build_fin_report(page: Any, fin_opts: Dict[str, Any], header_style: Paragra
                             except Exception:
                                 diff_str = ""
                                 color = None
-                        # Отображаем имя зоны: используем пользовательское название для пустой зоны
                         zone_display = no_zone_label if (not z or z.strip() == "Без зоны") else z
                         row = [
                             zone_display,
-                            f"{amt:,.2f}".replace(",", " "),
+                            f"{subtotal:,.2f}".replace(",", " "),
                             f"{tax_amt:,.2f}".replace(",", " "),
-                            f"{sum_taxed:,.2f}".replace(",", " ") + diff_str,
+                            f"{total_with_tax:,.2f}".replace(",", " ") + diff_str,
                         ]
                         zone_data.append(row)
                         zone_row_colors.append(color)
-                    # Строим таблицу
                     ncols = len(header)
                     col_widths = [FIN_TABLE_WIDTH_MM / max(ncols, 1) * mm] * ncols
                     tbl = Table(zone_data, repeatRows=1, colWidths=col_widths)
-                    # Стиль таблицы
                     style_cmds: List[Tuple[Any, ...]] = [
                         ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
                         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
