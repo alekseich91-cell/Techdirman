@@ -1,1 +1,0 @@
-Поместите сюда DejaVuSans.ttf и DejaVuSans-Bold.ttf
