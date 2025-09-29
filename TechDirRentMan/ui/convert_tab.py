@@ -1223,14 +1223,18 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                         continue
                     try:
                         # 3.3.2.a Запрашиваем путь сохранения у пользователя всегда.
-                        # Даже если проект выбран, пользователь самостоятельно
-                        # выбирает место и имя итогового файла. Предлагаем
-                        # исходное имя PDF с заменой расширения на .xlsx.
-                        suggested = src_path.with_suffix(".xlsx").name
+                        # Предлагаем имя исходного PDF с расширением .xlsx и
+                        # автоматически подставляем папку загрузок пользователя.
+                        suggested_name = src_path.with_suffix(".xlsx").name
+                        # Определяем путь каталога загрузок по стандартным путям системы
+                        download_dir = QtCore.QStandardPaths.writableLocation(
+                            QtCore.QStandardPaths.DownloadLocation
+                        )
+                        initial_path = str(Path(download_dir) / suggested_name)
                         dest_name, _ = QtWidgets.QFileDialog.getSaveFileName(
                             page,
                             "Сохранить как...",
-                            suggested,
+                            initial_path,
                             "Excel (*.xlsx)",
                         )
                         if not dest_name:
@@ -1259,6 +1263,15 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                         if hasattr(page, "_log") and callable(page._log):
                             page._log(msg)
                         logger.info(msg)
+                        # Запоминаем путь к последнему созданному Excel в родителе вкладки
+                        try:
+                            parent_tab = self.parent()
+                            if parent_tab is not None:
+                                # type: ignore[attr-defined]
+                                setattr(parent_tab, "last_excel_path", dest_path)
+                        except Exception:
+                            # игнорируем возможные ошибки при присвоении
+                            logger.debug("Не удалось сохранить путь последнего файла")
                     except Exception as ex:
                         # 3.3.3 Логируем ошибку и отображаем её
                         err_msg = f"Ошибка конвертации {src_path.name}: {ex}"
@@ -1271,7 +1284,56 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
 
     # Создаём и добавляем виджет
     # Передаем функцию, возвращающую выбранный режим из выпадающего списка.
-    drop_frame = PdfDropFrame("Перетащите сюда PDF", get_mode=lambda: mode_combo.currentData(), parent=tab)
+    drop_frame = PdfDropFrame(
+        "Перетащите сюда PDF",
+        get_mode=lambda: mode_combo.currentData(),
+        parent=tab,
+    )
     v.addWidget(drop_frame)
+
+    # Храним путь к последнему успешно сконвертированному файлу
+    # Он используется кнопкой «Отправить в импорт смет» для передачи файла в другой модуль.
+    tab.last_excel_path: Optional[Path] = None  # type: ignore[assignment]
+
+    # Функция отправки файла в импорт смет. Обёртка, чтобы иметь доступ к drop_frame и tab.
+    def _send_to_import() -> None:
+        """Отправляет последний конвертированный файл в модуль импорта смет."""
+        last_path: Optional[Path] = getattr(tab, "last_excel_path", None)
+        # Если файл ещё не был создан
+        if not last_path:
+            # Отображаем сообщение пользователю
+            drop_frame.label.setText("Нет конвертированного файла для импорта.")
+            logger.info("Попытка отправить в импорт смет без конвертированного файла")
+            return
+        # Если страница имеет специальный метод для отправки – вызываем его
+        # Иначе просто логируем действие
+        if hasattr(page, "send_to_import_smet") and callable(page.send_to_import_smet):
+            try:
+                page.send_to_import_smet(last_path)
+                msg = f"Файл '{last_path.name}' отправлен в импорт смет."
+                drop_frame.label.setText(msg)
+                if hasattr(page, "_log") and callable(page._log):
+                    page._log(msg)
+                logger.info(msg)
+            except Exception as ex:
+                err_msg = f"Ошибка при отправке файла '{last_path.name}' в импорт смет: {ex}"
+                drop_frame.label.setText(err_msg)
+                if hasattr(page, "_log") and callable(page._log):
+                    page._log(err_msg, "error")
+                logger.error(err_msg, exc_info=True)
+        else:
+            # Метод отправки не реализован – выводим лог
+            msg = f"Файл '{last_path.name}' готов для импорта смет (метод отправки не найден)."
+            drop_frame.label.setText(msg)
+            if hasattr(page, "_log") and callable(page._log):
+                page._log(msg)
+            logger.info(msg)
+
+    # Кнопка для отправки последнего файла в импорт смет
+    import_button = QtWidgets.QPushButton("Отправить в импорт смет")
+    import_button.setToolTip("Перебросить последний сконвертированный Excel в модуль импортирования смет")
+    import_button.clicked.connect(_send_to_import)
+    v.addWidget(import_button)
+
     # Добавляем растяжку, чтобы поле располагалось сверху
     v.addStretch(1)
