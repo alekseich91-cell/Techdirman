@@ -1,49 +1,30 @@
 """
 Назначение
-===========
+==========
 
 Этот модуль реализует вкладку «Конвертация» для приложения TechDirRentMan.
-Она предоставляет простую drag‑and‑drop область для загрузки PDF‑файлов и
-перевода их в формат Excel. Начиная с этой версии поддерживается только
-один вариант конвертации — **режим Rentman VSG**. Он предназначен для
-коммерческих предложений, сформированных системой Rentman/VSG, где таблицы
-не имеют видимых линий, но следуют строгому порядку: номер позиции,
-название, цена за единицу, количество, коэффициент, сумма. Прочие строки
-(заголовки, сводные итоги) игнорируются. Строки, не содержащие всех
-обязательных числовых полей (количество, коэффициент, сумма), исключаются.
-Для раздела «Расходная часть», который обозначается в документе словом
-«расход», коэффициент не указывается — он фиксируется равным 1, а строки
-собираются из цены за единицу, количества и суммы.
+Он предоставляет пользователю drag‑and‑drop интерфейс для загрузки PDF‑файлов
+и конвертации их в Excel. В рамках вкладки доступны два режима работы:
+— **Rentman VSG** и **Rentman Jamteck**. Первый режим предназначен
+для коммерческих предложений, сформированных системой Rentman/VSG, где
+табличные данные представлены без линий, но следуют строгому порядку:
+номер позиции, название, цена за единицу, количество, коэффициент, сумма.
 
-При перетаскивании файла пользователю предлагается выбрать путь сохранения
-результирующего XLSX‑файла. Файл сохраняется на указанный путь; все операции
-и возможные ошибки отображаются в пользовательском логе и фиксируются в
-лог‑файле ``convert_tab.log``.
+Модуль разбит на пронумерованные секции с краткими заголовками. В
+комментариях поясняется назначение и логика работы каждой функции и
+блоков кода. Все операции протоколируются в лог файл ``convert_tab.log``,
+что позволяет отслеживать успешные действия и ошибки.
 
-Принцип работы
---------------
+Дополнительная логика фильтрации нулевых строк
+---------------------------------------------
 
-* ``build_convert_tab(page, tab)`` – создаёт интерфейс вкладки: текстовое
-  описание и область для перетаскивания файла.
-* ``PdfDropFrame`` – наследник ``QFrame`` с поддержкой drag‑and‑drop. При
-  отпускании файла автоматически запрашивает путь сохранения и вызывает
-  ``convert_pdf_to_excel``.
-* ``convert_pdf_to_excel`` – извлекает данные из PDF, используя
-  библиотеку **PyMuPDF**. Каждая строка страницы собирается из слов, после
-  чего анализируется: если она содержит две суммы (значения с символом
-  «₽»), алгоритм считает, что это строка таблицы и распределяет элементы
-  между колонками: «Наименование», «Кол‑во», «Цена за ед.», «Коэфф.»,
-  «Сумма». Строки без двух сумм трактуются как текст и сохраняются в
-  отдельной колонке. Конечный результат записывается в один лист Excel.
-
-Стиль кода
------------
-
-* Файл разделён на пронумерованные секции с краткими заголовками.
-* Каждая функция снабжена комментарием, описывающим её назначение и
-  логику работы.
-* Все исключительные ситуации протоколируются в логах для упрощения
-  отладки.
+В некоторых коммерческих предложениях встречаются строки, которые
+выглядят пустыми: текст в ячейках скрыт с помощью белого или
+прозрачного шрифта. Обычно у таких строк итоговая сумма равна нулю.
+Чтобы исключить подобные позиции из результирующей таблицы, в
+алгоритм добавлены проверки на нулевую стоимость, количество и
+коэффициент. Если хотя бы один из параметров равен нулю, строка
+пропускается.
 """
 
 # 1. Импорт стандартных библиотек
@@ -56,7 +37,6 @@ from PySide6 import QtWidgets, QtCore, QtGui
 
 # Импорт общих путей (можно использовать для хранения временных файлов)
 from .common import ASSETS_DIR, DATA_DIR
-
 
 # 0. Настройка логирования
 # Создаём директорию для логов (если не существует)
@@ -71,19 +51,30 @@ logging.basicConfig(
 logger = logging.getLogger("convert_tab")
 
 
-# 2. Вспомогательная функция: конвертация PDF → Excel
-def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplumber", *, manual_bounds: Optional[list[float]] = None) -> None:
+# 2. Вспомогательные функции: конвертация PDF → Excel
+def convert_pdf_to_excel(
+    pdf_path: Path,
+    dest_path: Path,
+    engine: str = "pdfplumber",
+    *,
+    manual_bounds: Optional[list[float]] = None,
+) -> None:
     """
     Конвертирует PDF‑файл в XLSX, собирая все строки таблиц на одном листе.
 
-    Несмотря на наличие параметров ``engine`` и ``manual_bounds`` (оставленных для
-    обратной совместимости), функция всегда использует встроенный режим Rentman VSG.
-    Этот режим анализирует каждую строку, извлечённую из PDF с помощью PyMuPDF,
-    и ищет две суммы (значения с символом «₽»). Если строка относится к
-    разделу аренды, она должна содержать как минимум количество и коэффициент;
-    строки, в которых числовые поля отсутствуют, не попадают в таблицу.
-    В разделе расходной части коэффициент отсутствует и принимается равным 1.
-    Заголовочные и сводные строки пропускаются.
+    Несмотря на наличие параметров ``engine`` и ``manual_bounds`` (оставленных
+    для обратной совместимости), функция всегда использует встроенный режим
+    Rentman VSG. Этот режим анализирует каждую строку, извлечённую из
+    PDF с помощью PyMuPDF, и ищет две суммы (значения с символом «₽»).
+    Если строка относится к разделу аренды, она должна содержать как минимум
+    количество и коэффициент; строки, в которых числовые поля отсутствуют,
+    не попадают в таблицу. В разделе расходной части коэффициент отсутствует
+    и принимается равным 1. Заголовочные и сводные строки пропускаются.
+
+    Также добавлены проверки на нулевые значения: если итоговая сумма,
+    цена, количество или коэффициент равны нулю, такая строка
+    пропускается. Эти проверки помогают отфильтровывать строки с
+    скрытыми значениями, в которых сумма указана как ``0 ₽``.
 
     :param pdf_path: путь к исходному PDF.
     :param dest_path: путь к итоговому XLSX. Папка будет создана при необходимости.
@@ -290,7 +281,12 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
 
     # Проверка, является ли токен числовым (удаляются пробелы и запятые)
     def _is_numeric_token(token: str) -> bool:
-        cleaned = token.replace(" ", "").replace("\u00A0", "").replace("\u202F", "").replace(",", "")
+        cleaned = (
+            token.replace(" ", "")
+            .replace("\u00A0", "")
+            .replace("\u202F", "")
+            .replace(",", "")
+        )
         return cleaned.isdigit()
 
     # Список записей (словарей), каждая представляет строку таблицы.
@@ -357,156 +353,134 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                     continue
                 last_idx = currency_indices[-1]
                 second_last_idx = currency_indices[-2]
-                # Сбор суммы (последняя). Собираем все подряд идущие числовые токены
-                # непосредственно перед знаком валюты. В некоторых PDF суммы могут
-                # состоять из трёх частей (например, «16 000 00»), поэтому
-                # ограничение на два токена приводит к потере значащих цифр.
-                sum_tokens_list: list[str] = []
-                idx = last_idx - 1
-                while idx >= 0 and _is_numeric_token(tokens[idx]):
-                    sum_tokens_list.insert(0, tokens[idx])
-                    idx -= 1
-                # Сбор цены (предпоследняя). Аналогично собираем все числовые токены
-                # перед предыдущим знаком валюты.
+                # Сбор цены за единицу: все подряд идущие числовые токены непосредственно
+                # перед предпоследним знаком валюты. Эти токены составляют цену.
                 price_tokens_list: list[str] = []
                 idx_p = second_last_idx - 1
                 while idx_p >= 0 and _is_numeric_token(tokens[idx_p]):
                     price_tokens_list.insert(0, tokens[idx_p])
                     idx_p -= 1
-                if not price_tokens_list or not sum_tokens_list:
+                if not price_tokens_list:
                     continue
-                # На основе найденных токенов суммы и цены заранее вычисляем их
-                # числовые значения. Если указанная в документе сумма равна нулю,
-                # то позиция считается скрытой и пропускается без дальнейшего
-                # вычисления. Это позволяет не учитывать строки с «0 ₽» еще до
-                # определения количества и коэффициента.
-                # Помощник для объединения числовых токенов в строку
+                # В некоторых строках перед ценой встречаются лишние числовые токены (например,
+                # номер или счётчик типа «2»), которые не являются частью цены. Типичная цена
+                # в коммерческих предложениях состоит из двух токенов (тысячи и сотни) либо
+                # трёх токенов, если присутствуют копейки (пример: «16 000 00» -> «16 000,00»).
+                # Если извлечено более двух токенов и последний токен не является двухзначным
+                # (т.е. это не копейки), считаем, что лишние начальные токены относятся к
+                # наименованию, а не к цене. Сдвигаем их влево.
+                _initial_len = len(price_tokens_list)
+                # Если извлечено более двух токенов и последний токен не двухзначный (нет копеек),
+                # это может быть длинная цена (например «1 500 000»), но иногда первый токен —
+                # лишний счётчик ("2"), который должен попасть в название. Будем считать,
+                # что токен относится к имени, если всего три токена и второй токен имеет
+                # длину ≤ 2 символов (обычно «25»), что характерно для цен вида «25 000».
+                if _initial_len > 2 and len(price_tokens_list[-1]) != 2:
+                    # проверяем длину второго токена: если <=2, убираем лишние первые токены
+                    second_len = len(price_tokens_list[1]) if _initial_len >= 2 else 0
+                    if second_len <= 2:
+                        shift = _initial_len - 2
+                        price_tokens_list = price_tokens_list[shift:]
+                        price_tokens_shift = shift
+                    else:
+                        price_tokens_shift = 0
+                else:
+                    price_tokens_shift = 0
+
+                # Промежуточные числовые токены между ценой и итоговой суммой. Они могут
+                # включать количество, коэффициент и части суммы (если она разбивается на несколько токенов).
+                mid_numeric: list[str] = [
+                    t
+                    for t in tokens[second_last_idx + 1 : last_idx]
+                    if _is_numeric_token(t)
+                ]
+
+                # Объединение числовых токенов в строку. Если последняя часть имеет длину две
+                # цифры и токенов три и более, считаем её дробной частью (пример: 16 000 00 -> 16 000,00).
                 def _join_number_tokens(num_tokens: list[str]) -> str:
                     if not num_tokens:
                         return ""
-                    # Если последний токен из двух цифр и токенов >=3,
-                    # интерпретируем как дробную часть
                     if len(num_tokens) >= 3 and len(num_tokens[-1]) == 2:
                         ints = num_tokens[:-1]
                         decimals = num_tokens[-1]
                         return " ".join(ints) + "," + decimals
                     return " ".join(num_tokens)
 
+                # Числовое значение цены. Если цена равна нулю, строка скрыта – пропускаем.
                 try:
                     price_val_tmp = _to_number(_join_number_tokens(price_tokens_list))
                 except Exception:
                     price_val_tmp = None
-                try:
-                    sum_val_extracted = _to_number(_join_number_tokens(sum_tokens_list))
-                    if not isinstance(sum_val_extracted, (int, float)):
-                        sum_val_extracted = None
-                except Exception:
-                    sum_val_extracted = None
-
-                # Если сумма распознана и равна нулю — пропускаем строку, не
-                # выполняя дальнейших вычислений
-                if sum_val_extracted == 0:
+                if isinstance(price_val_tmp, (int, float)) and price_val_tmp == 0:
                     continue
-                # Чтение количества и коэффициента между ценой и суммой.
-                qty_coeff_tokens: list[str] = [
-                    t for t in tokens[second_last_idx + 1 : last_idx] if _is_numeric_token(t)
-                ]
+
+                # Определяем количество (qty), коэффициент (coeff) и элементы суммы (sum_tokens_list)
                 qty_str: Optional[str] = None
                 coeff_str: Optional[str] = None
+                sum_tokens_list: list[str] = []
+
                 if not expenses_section:
-                    # Для раздела аренды желательно иметь хотя бы один числовой токен
-                    if not qty_coeff_tokens:
+                    # В разделе аренды: первый токен – количество, второй – коэффициент,
+                    # оставшиеся – части суммы. Если коэффициента нет, считаем его равным 1.
+                    if not mid_numeric:
                         continue
-                    # Формируем список кандидатов: пара (qty, coeff) и вариант с coeff=1.
-                    candidates: list[tuple[str, str]] = []
-                    if len(qty_coeff_tokens) >= 2:
-                        candidates.append((qty_coeff_tokens[0], qty_coeff_tokens[1]))
-                    # Вариант с коэффициентом 1 всегда добавляем.
-                    candidates.append((qty_coeff_tokens[0], "1"))
-                    # Перебираем кандидаты и выбираем тот, у которого произведение
-                    # совпадает с указанной в документе суммой (если она распознана).
-                    chosen: Optional[tuple[str, str]] = None
-                    for cand_qty, cand_coeff in candidates:
-                        try:
-                            cand_qty_num = _to_number(cand_qty)
-                            cand_coeff_num = _to_number(cand_coeff)
-                            # убеждаемся, что цена тоже числовая
-                            if not (
-                                isinstance(cand_qty_num, (int, float))
-                                and isinstance(cand_coeff_num, (int, float))
-                                and isinstance(price_val_tmp, (int, float))
-                            ):
-                                continue
-                            product = price_val_tmp * cand_qty_num * cand_coeff_num
-                            if sum_val_extracted is not None:
-                                if abs(product - sum_val_extracted) < 1:
-                                    chosen = (cand_qty, cand_coeff)
-                                    break
-                            else:
-                                # если сумма не распознана, берём первый валидный вариант
-                                chosen = (cand_qty, cand_coeff)
-                                break
-                        except Exception:
-                            continue
-                    if chosen is None:
-                        chosen = (qty_coeff_tokens[0], "1")
-                    qty_str, coeff_str = chosen
+                    if len(mid_numeric) >= 2:
+                        qty_str = mid_numeric[0]
+                        coeff_str = mid_numeric[1]
+                        sum_tokens_list = mid_numeric[2:]
+                    else:
+                        qty_str = mid_numeric[0]
+                        coeff_str = "1"
+                        sum_tokens_list = []
                 else:
-                    # В расходной части коэффициент всегда 1, количество — первый токен
-                    if not qty_coeff_tokens:
+                    # В разделе расходов: коэффициент всегда 1, количество – первый токен, остальные – части суммы.
+                    if not mid_numeric:
                         continue
-                    qty_str = qty_coeff_tokens[0]
+                    qty_str = mid_numeric[0]
                     coeff_str = "1"
-                # Имя – всё до начала цены
-                price_start_index = second_last_idx - len(price_tokens_list)
+                    sum_tokens_list = mid_numeric[1:]
+
+                # Пробуем извлечь явную сумму из токенов суммы. Если сумма указана и равна нулю – пропускаем строку.
+                sum_val_extracted: Optional[float] = None
+                if sum_tokens_list:
+                    try:
+                        s = _to_number(_join_number_tokens(sum_tokens_list))
+                        if isinstance(s, (int, float)):
+                            sum_val_extracted = s
+                    except Exception:
+                        sum_val_extracted = None
+                if sum_val_extracted == 0:
+                    continue
+
+                # Имя позиции – все токены до начала цены. Если из цены были удалены
+                # лишние числовые токены (price_tokens_shift), учтём это смещение, чтобы
+                # перенести их в название. price_start_index вычисляется из исходной
+                # длины price_tokens_list и сдвига.
+                price_start_index = (second_last_idx - (_initial_len)) + price_tokens_shift
                 name_tokens = tokens[:price_start_index]
                 name = " ".join(name_tokens).strip()
                 if not name:
                     continue
-                # Собираем строки суммы и цены. Если сумма или цена состоят из трёх
-                # частей (например, «16 000 00»), преобразуем их в формат с запятой,
-                # чтобы корректно распознать десятичные дроби.
-                def _build_number_str(num_tokens: list[str]) -> str:
-                    """Объединяет список числовых токенов в одну строку. Если
-                    последняя часть имеет длину два символа и токенов три и более,
-                    считаем, что это дробная часть, и вставляем запятую перед
-                    ней (пример: ['16','000','00'] → '16 000,00'). В остальных
-                    случаях просто объединяем через пробел.
-                    """
-                    if not num_tokens:
-                        return ""
-                    if len(num_tokens) >= 3 and len(num_tokens[-1]) == 2:
-                        ints = num_tokens[:-1]
-                        decimals = num_tokens[-1]
-                        return " ".join(ints) + "," + decimals
-                    return " ".join(num_tokens)
 
-                unit_price_str = _build_number_str(price_tokens_list)
-                total_str = _build_number_str(sum_tokens_list)
-
+                # Преобразуем цену, количество и коэффициент в числа. При ошибке пропускаем строку.
                 try:
-                    price_val = _to_number(unit_price_str)
-                    qty_val = _to_number(qty_str)
-                    coeff_val = _to_number(coeff_str)
+                    price_val = _to_number(_join_number_tokens(price_tokens_list))
+                    qty_val = _to_number(qty_str) if qty_str is not None else None
+                    coeff_val = _to_number(coeff_str) if coeff_str is not None else None
                 except Exception:
-                    # В случае ошибки парсинга пропускаем строку, чтобы не
-                    # придумывать значения для некорректных позиций.
                     continue
-
-                # Пропускаем строки, где цена, количество или коэффициент не
-                # распознались как числа. Это позволяет исключить позиции
-                # без указания цены или количества.
+                # Проверяем, что цена, количество и коэффициент – числа
                 if not (
                     isinstance(price_val, (int, float))
                     and isinstance(qty_val, (int, float))
                     and isinstance(coeff_val, (int, float))
                 ):
                     continue
-
-                # Вычисляем итоговую сумму как произведение цены, количества и коэффициента.
+                # Пропускаем строки с нулевыми значениями
+                if price_val == 0 or qty_val == 0 or coeff_val == 0:
+                    continue
+                # Вычисляем итоговую сумму как произведение цены, количества и коэффициента
                 total_val = price_val * qty_val * coeff_val
-                # Если итоговая сумма равна нулю, считаем, что цена скрыта или позиция не указана –
-                # такую строку в таблицу не добавляем.
                 if total_val == 0:
                     continue
                 # Добавляем запись в общий список
@@ -528,13 +502,208 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
     try:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         # Формируем итоговый DataFrame из записей. Заголовок будет записан один раз.
-        df_result = pd.DataFrame(records, columns=["Наименование", "Кол-во", "Цена за ед.", "Коэфф.", "Сумма"])
+        df_result = pd.DataFrame(
+            records,
+            columns=["Наименование", "Кол-во", "Цена за ед.", "Коэфф.", "Сумма"],
+        )
         with pd.ExcelWriter(dest_path, engine="openpyxl") as writer:
             df_result.to_excel(writer, sheet_name="Sheet1", index=False)
     except Exception as ex:
         logger.error("Ошибка записи в Excel: %s", ex, exc_info=True)
         raise RuntimeError(f"Ошибка конвертации: {ex}")
     return
+
+    # 2.B Вспомогательные функции для режима Rentman Jamteck
+
+    # NOTE: код Jamteck вынесен в отдельный раздел, чтобы сохранить
+    # читаемость. Этот режим использует библиотеку pdfplumber для
+    # извлечения текста и регулярные выражения для парсинга строк.
+
+# 2.B.1 Преобразование строки цены в число
+def _jamteck_parse_price(text: str) -> float:
+    """
+    Преобразует строку стоимости, например «1 590,00», в число float.
+
+    В PDF использованы пробелы для разделения тысяч и запятая
+    для десятичной точки. Функция удаляет пробельные и валютные
+    символы и возвращает число. В случае ошибки возвращает 0.0.
+
+    :param text: строка с числом, без символа валюты.
+    :return: вещественное значение стоимости.
+    """
+    cleaned = text.replace("₽", "").replace("\xa0", "").replace(" ", "")
+    cleaned = cleaned.replace(",", ".")
+    try:
+        return float(cleaned)
+    except Exception:
+        logger.error("Jamteck: не удалось преобразовать цену '%s'", text)
+        return 0.0
+
+
+# 2.B.2 Разбор PDF в формате Jamteck
+def _jamteck_parse_pdf(pdf_path: Path) -> dict[str, list[dict]]:
+    """
+    Извлекает данные из PDF коммерческого предложения Jamteck.
+
+    В файле могут присутствовать несколько суб‑проектов. Каждому
+    суб‑проекту соответствует ключ словаря, значение которого –
+    список словарей с колонками:
+
+      * ``Наименование`` – имя позиции
+      * ``Количество`` – целое число
+      * ``Цена за единицу`` – float
+      * ``Коэффициент`` – целое число
+      * ``Сумма`` – float
+
+    Строки с нулевой суммой пропускаются. Строки с некорректной
+    структурой игнорируются.
+
+    :param pdf_path: путь к исходному PDF
+    :return: словарь суб‑проектов
+    """
+    try:
+        import pdfplumber  # type: ignore
+    except ImportError as ex:
+        msg = (
+            "Библиотека pdfplumber не установлена. Добавьте её в requirements.txt или "
+            "установите вручную."
+        )
+        logger.error(msg)
+        raise RuntimeError(msg) from ex
+    logging.info("Jamteck: Парсинг PDF %s", pdf_path)
+    import re
+    # регулярки для суб‑проекта и хвостов колонок
+    subproject_re = re.compile(r"^Суб-проект: (.+)$")
+    # Паттерны для хвостов строк.
+    # Количество (1–2 цифры) обязательно должно быть отделено пробелом; это исключает цифры внутри названия (например, G500).
+    equip_tail_re = re.compile(r"(?<=\s)(\d+)\s+([\d\s]+,\d{2})\s+(\d+)\s+([\d\s]+,\d{2})$")
+    personnel_tail_re = re.compile(r"(?<=\s)(\d+)\s+([\d\s]+,\d{2})$")
+    skip_prefixes = ["Итого", "Подытог", "Цена"]
+    skip_contains = ["Налоги", "Сумма", "УСН", "НДС", "Доп.", "Подтверждение"]
+    projects: dict[str, list[dict]] = {}
+    current_proj: str | None = None
+    capturing = False
+    # читаем весь текст
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception as ex:
+        logger.error("Jamteck: ошибка чтения PDF: %s", ex, exc_info=True)
+        raise RuntimeError(f"Ошибка чтения PDF: {ex}")
+    lines = text.split("\n")
+    for raw_line in lines:
+        line = (
+            raw_line.replace("₽", "")
+            .replace("\xa0", " ")
+            .replace("\u202f", " ")
+            .strip()
+        )
+        m = subproject_re.match(line)
+        if m:
+            current_proj = m.group(1).strip()
+            projects[current_proj] = []
+            capturing = True
+            logger.info("Jamteck: найден суб-проект %s", current_proj)
+            continue
+        if capturing and line.startswith("Цена:"):
+            capturing = False
+            continue
+        if not capturing or current_proj is None or not line:
+            continue
+        if any(line.startswith(p) for p in skip_prefixes) or any(word in line for word in skip_contains):
+            continue
+        eq_match = equip_tail_re.search(line)
+        if eq_match:
+            qty_str, unit_str, coeff_str, total_str = eq_match.groups()
+            name = line[: eq_match.start()].strip()
+            try:
+                quantity = int(qty_str)
+                coeff = int(coeff_str)
+                unit_val = _jamteck_parse_price(unit_str)
+                total_val = _jamteck_parse_price(total_str)
+            except Exception:
+                continue
+            if total_val == 0:
+                continue
+            projects[current_proj].append(
+                {
+                    "Наименование": name,
+                    "Количество": quantity,
+                    "Цена за единицу": unit_val,
+                    "Коэффициент": coeff,
+                    "Сумма": total_val,
+                }
+            )
+            continue
+        pr_match = personnel_tail_re.search(line)
+        if pr_match:
+            qty_str, total_str = pr_match.groups()
+            name = line[: pr_match.start()].strip()
+            try:
+                quantity = int(qty_str)
+                total_val = _jamteck_parse_price(total_str)
+            except Exception:
+                continue
+            if total_val == 0:
+                continue
+            unit_val = total_val / quantity if quantity else 0.0
+            projects[current_proj].append(
+                {
+                    "Наименование": name,
+                    "Количество": quantity,
+                    "Цена за единицу": unit_val,
+                    "Коэффициент": 1,
+                    "Сумма": total_val,
+                }
+            )
+            continue
+        # прочие строки опускаем
+        continue
+    logger.info("Jamteck: завершён парсинг, найдено %d суб-проектов", len(projects))
+    return projects
+
+
+# 2.B.3 Запись данных Jamteck в Excel
+def convert_pdf_to_excel_jamteck(pdf_path: Path, dest_path: Path) -> None:
+    """
+    Конвертирует PDF Jamteck в Excel.
+
+    Создаёт отдельный лист для каждого суб‑проекта. Если данные не
+    найдены, генерируется исключение. Использует pandas и openpyxl для
+    записи.
+
+    :param pdf_path: путь к исходному PDF
+    :param dest_path: путь, куда будет сохранён XLSX
+    """
+    try:
+        import pandas as pd  # type: ignore
+    except ImportError as ex:
+        msg = (
+            "Jamteck: библиотека pandas не установлена. Добавьте её в requirements.txt или "
+            "установите вручную."
+        )
+        logger.error(msg)
+        raise RuntimeError(msg) from ex
+    projects = _jamteck_parse_pdf(pdf_path)
+    if not projects:
+        raise RuntimeError("Jamteck: в выбранном файле не найдено таблиц для обработки.")
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with pd.ExcelWriter(dest_path, engine="openpyxl") as writer:
+            for name, rows in projects.items():
+                df = pd.DataFrame(rows)
+                # Приводим числовые колонки к корректным типам
+                for col in ["Количество", "Коэффициент"]:
+                    if col in df.columns:
+                        df[col] = df[col].astype(int)
+                for col in ["Цена за единицу", "Сумма"]:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
+                sheet_name = name[:31] if name else "Sheet1"
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+    except Exception as ex:
+        logger.error("Jamteck: ошибка записи в Excel: %s", ex, exc_info=True)
+        raise RuntimeError(f"Ошибка конвертации Jamteck: {ex}")
 
     # 2.4 Извлечение данных
     aggregated: list['pd.DataFrame'] = []
@@ -570,7 +739,9 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
             if sorted(bounds) != bounds or bounds[0] != 0.0 or bounds[-1] != 1.0:
                 raise ValueError
         except Exception:
-            logger.error("Некорректный список границ столбцов для режима manual: %s", bounds)
+            logger.error(
+                "Некорректный список границ столбцов для режима manual: %s", bounds
+            )
             raise RuntimeError("Некорректный список границ столбцов")
         try:
             doc = fitz.open(str(pdf_path))
@@ -578,7 +749,9 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                 try:
                     words = page.get_text("words")  # type: ignore[attr-defined]
                 except Exception as ex:
-                    logger.error("Ошибка извлечения слов на странице %s: %s", page_index, ex, exc_info=True)
+                    logger.error(
+                        "Ошибка извлечения слов на странице %s: %s", page_index, ex, exc_info=True
+                    )
                     continue
                 if not words:
                     continue
@@ -642,26 +815,30 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         coeff_val = col_texts[3] if len(col_texts) > 3 else ""
                         total_val = col_texts[4] if len(col_texts) > 4 else ""
                         try:
-                            frame = _pd.DataFrame([
-                                {
-                                    "Оборудование": name_val,
-                                    "Кол-во": _to_number(qty_val),
-                                    "Цена за ед.": _to_number(price_val),
-                                    "Коэфф.": _to_number(coeff_val),
-                                    "Сумма": _to_number(total_val),
-                                }
-                            ])
+                            frame = _pd.DataFrame(
+                                [
+                                    {
+                                        "Оборудование": name_val,
+                                        "Кол-во": _to_number(qty_val),
+                                        "Цена за ед.": _to_number(price_val),
+                                        "Коэфф.": _to_number(coeff_val),
+                                        "Сумма": _to_number(total_val),
+                                    }
+                                ]
+                            )
                         except Exception:
                             # fallback: сохраняем без преобразования
-                            frame = _pd.DataFrame([
-                                {
-                                    "Оборудование": name_val,
-                                    "Кол-во": qty_val,
-                                    "Цена за ед.": price_val,
-                                    "Коэфф.": coeff_val,
-                                    "Сумма": total_val,
-                                }
-                            ])
+                            frame = _pd.DataFrame(
+                                [
+                                    {
+                                        "Оборудование": name_val,
+                                        "Кол-во": qty_val,
+                                        "Цена за ед.": price_val,
+                                        "Коэфф.": coeff_val,
+                                        "Сумма": total_val,
+                                    }
+                                ]
+                            )
                         aggregated.append(frame)
                     else:
                         # Строка рассматривается как текст
@@ -688,7 +865,9 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
             for page_index, page in enumerate(doc, start=1):
                 try:
                     try:
-                        tables = page.find_tables(horizontal_strategy="text", vertical_strategy="text")
+                        tables = page.find_tables(
+                            horizontal_strategy="text", vertical_strategy="text"
+                        )
                     except Exception:
                         tables = page.find_tables()  # type: ignore[attr-defined]
                     if tables:
@@ -698,7 +877,12 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                                 norm = _normalize_dataframe(df)
                                 aggregated.extend(norm)
                             except Exception as ex:
-                                logger.error("Ошибка обработки таблицы на странице %s: %s", page_index, ex, exc_info=True)
+                                logger.error(
+                                    "Ошибка обработки таблицы на странице %s: %s",
+                                    page_index,
+                                    ex,
+                                    exc_info=True,
+                                )
                     else:
                         try:
                             text = page.get_text("text")  # type: ignore[attr-defined]
@@ -707,7 +891,9 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         if text:
                             aggregated.append(pd.DataFrame({"text": [text]}))
                 except Exception as ex:
-                    logger.error("Ошибка обработки страницы %s: %s", page_index, ex, exc_info=True)
+                    logger.error(
+                        "Ошибка обработки страницы %s: %s", page_index, ex, exc_info=True
+                    )
                     try:
                         text = page.get_text("text")  # type: ignore[attr-defined]
                     except Exception:
@@ -815,7 +1001,11 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         if "₽" in txt:
                             continue
                         # убираем пробелы и неразрывные пробелы для проверки числа
-                        cleaned = txt.replace(" ", "").replace("\u00A0", "").replace("\u202F", "")
+                        cleaned = (
+                            txt.replace(" ", "")
+                            .replace("\u00A0", "")
+                            .replace("\u202F", "")
+                        )
                         # пропускаем, если это полностью число
                         if cleaned.isdigit():
                             continue
@@ -835,17 +1025,24 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         coeff_val = _to_number(coeff_str)
                         total_val = _to_number(total_str)
                     except Exception:
-                        price_val, qty_val, coeff_val, total_val = unit_price_str, qty_str, coeff_str, total_str
+                        price_val, qty_val, coeff_val, total_val = (
+                            unit_price_str,
+                            qty_str,
+                            coeff_str,
+                            total_str,
+                        )
                     aggregated.append(
-                        pd.DataFrame([
-                            {
-                                "Оборудование": name,
-                                "Кол-во": qty_val,
-                                "Цена за ед.": price_val,
-                                "Коэфф.": coeff_val,
-                                "Сумма": total_val,
-                            }
-                        ])
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Оборудование": name,
+                                    "Кол-во": qty_val,
+                                    "Цена за ед.": price_val,
+                                    "Коэфф.": coeff_val,
+                                    "Сумма": total_val,
+                                }
+                            ]
+                        )
                     )
         except Exception as ex:
             logger.error("Ошибка при чтении PDF (regex): %s", ex, exc_info=True)
@@ -869,7 +1066,10 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         # пытаемся извлечь таблицы со стратегией text
                         try:
                             tables = page.extract_tables(
-                                table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
+                                table_settings={
+                                    "vertical_strategy": "text",
+                                    "horizontal_strategy": "text",
+                                }
                             ) or []
                         except TypeError:
                             # старая версия pdfplumber — вызываем без table_settings
@@ -880,7 +1080,10 @@ def convert_pdf_to_excel(pdf_path: Path, dest_path: Path, engine: str = "pdfplum
                         if not tables:
                             try:
                                 t = page.extract_table(
-                                    table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
+                                    table_settings={
+                                        "vertical_strategy": "text",
+                                        "horizontal_strategy": "text",
+                                    }
                                 )
                                 if t:
                                     tables = [t]
@@ -943,15 +1146,25 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
 
     # 3.1 Заголовок/описание
     lbl_desc = QtWidgets.QLabel(
-        "Перетащите PDF‑файл в поле ниже, чтобы конвертировать его в Excel.\n"
+        "Выберите режим конвертации и перетащите PDF‑файл в поле ниже, чтобы конвертировать его в Excel.\n"
         "После перетаскивания выберите место для сохранения результирующего файла .xlsx."
     )
     lbl_desc.setWordWrap(True)
     v.addWidget(lbl_desc)
 
-    # В текущей версии движок конвертации фиксирован (Rentman VSG),
-    # поэтому выбор механизма и поле ручных границ удалены. Оставляем
-    # только описание и область перетаскивания.
+    # 3.1.1 Выбор режима конвертации
+    # Добавляем выпадающий список с режимами: Rentman VSG и Rentman Jamteck.
+    mode_layout = QtWidgets.QHBoxLayout()
+    mode_label = QtWidgets.QLabel("Режим:")
+    mode_combo = QtWidgets.QComboBox()
+    # Используем данные (данные элементов) для хранения значения режима
+    mode_combo.addItem("Rentman VSG", userData="vsg")
+    mode_combo.addItem("Rentman Jamteck", userData="jamteck")
+    mode_combo.setToolTip("Выберите алгоритм конвертации PDF")
+    mode_layout.addWidget(mode_label)
+    mode_layout.addWidget(mode_combo)
+    # Помещаем компоновку в общий вертикальный контейнер
+    v.addLayout(mode_layout)
 
     # 3.2 Класс виджета для D&D области
     class PdfDropFrame(QtWidgets.QFrame):
@@ -960,7 +1173,13 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
         возможен, но диалог сохранения будет показан для каждого файла
         отдельно. Добавленные имена файлов отображаются в QLabel.
         """
-        def __init__(self, title: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
+
+        def __init__(self, title: str, get_mode: Any, parent: Optional[QtWidgets.QWidget] = None) -> None:
+            """
+            :param title: текст, отображаемый в области D&D
+            :param get_mode: функция без параметров, возвращающая выбранный режим
+            :param parent: родительский виджет
+            """
             super().__init__(parent)
             self.setFrameShape(QtWidgets.QFrame.StyledPanel)
             self.setFrameShadow(QtWidgets.QFrame.Sunken)
@@ -970,6 +1189,7 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
             self.label.setAlignment(QtCore.Qt.AlignCenter)
             layout = QtWidgets.QVBoxLayout(self)
             layout.addWidget(self.label)
+            self._get_mode = get_mode
 
         def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:  # type: ignore[override]
             # Принимаем только файлы
@@ -1007,18 +1227,32 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                         # выбирает место и имя итогового файла. Предлагаем
                         # исходное имя PDF с заменой расширения на .xlsx.
                         suggested = src_path.with_suffix(".xlsx").name
-                        dest_name, ok = QtWidgets.QFileDialog.getSaveFileName(
+                        dest_name, _ = QtWidgets.QFileDialog.getSaveFileName(
                             page,
                             "Сохранить как...",
                             suggested,
-                            "Excel (*.xlsx)"
+                            "Excel (*.xlsx)",
                         )
-                        if not ok or not dest_name:
+                        if not dest_name:
                             continue
                         dest_path = Path(dest_name)
-                        # 3.3.2.b Выполняем конвертацию. Используется режим Rentman VSG.
-                        convert_pdf_to_excel(src_path, dest_path)
-                        msg = f"Файл '{src_path.name}' конвертирован в '{dest_path.name}'."
+                        # 3.3.2.b Выполняем конвертацию согласно выбранному режиму
+                        mode = self._get_mode()
+                        try:
+                            if mode == "jamteck":
+                                convert_pdf_to_excel_jamteck(src_path, dest_path)
+                            else:
+                                convert_pdf_to_excel(src_path, dest_path)
+                            msg = f"Файл '{src_path.name}' конвертирован в '{dest_path.name}' (режим {mode})."
+                        except Exception as ex:
+                            # перехватываем ошибки, чтобы отобразить их в метке
+                            err_msg = f"Ошибка конвертации {src_path.name}: {ex}"
+                            self.label.setText(err_msg)
+                            if hasattr(page, "_log") and callable(page._log):
+                                page._log(err_msg, "error")
+                            logger.error(err_msg, exc_info=True)
+                            continue
+                        # конвертация успешна
                         # Обновляем текст метки сообщением о конвертации
                         self.label.setText(msg)
                         # Выводим сообщение в пользовательский лог
@@ -1036,7 +1270,8 @@ def build_convert_tab(page: Any, tab: QtWidgets.QWidget) -> None:
                 logger.error("Ошибка обработки события drop", exc_info=True)
 
     # Создаём и добавляем виджет
-    drop_frame = PdfDropFrame("Перетащите сюда PDF", tab)
+    # Передаем функцию, возвращающую выбранный режим из выпадающего списка.
+    drop_frame = PdfDropFrame("Перетащите сюда PDF", get_mode=lambda: mode_combo.currentData(), parent=tab)
     v.addWidget(drop_frame)
     # Добавляем растяжку, чтобы поле располагалось сверху
     v.addStretch(1)
